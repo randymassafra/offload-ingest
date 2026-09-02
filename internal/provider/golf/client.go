@@ -266,10 +266,64 @@ type ScheduleEntry struct {
 	Name    string   `json:"name"`
 	Purse   MongoInt `json:"purse"`
 	Date    struct {
-		Start json.RawMessage `json:"start"`
-		End   json.RawMessage `json:"end"`
+		Start      MongoDate `json:"start"`
+		End        MongoDate `json:"end"`
+		WeekNumber string    `json:"weekNumber"`
 	} `json:"date"`
 	Format string `json:"format"`
+}
+
+// InProgress reports whether the tournament's window contains t.
+//
+// The end date is the final round's date, so the window runs to the end of that
+// whole day — a leaderboard is at its most interesting on Sunday evening, and
+// an exclusive comparison would drop the tournament exactly then.
+func (e ScheduleEntry) InProgress(t time.Time) bool {
+	if e.Date.Start.IsZero() || e.Date.End.IsZero() {
+		return false
+	}
+	return !t.Before(e.Date.Start.Time) && t.Before(e.Date.End.Time.Add(24*time.Hour))
+}
+
+// Completed reports whether the tournament finished before t.
+func (e ScheduleEntry) Completed(t time.Time) bool {
+	if e.Date.End.IsZero() {
+		return false
+	}
+	return t.After(e.Date.End.Time.Add(24 * time.Hour))
+}
+
+// Current picks the tournament to poll for a given moment.
+//
+// The window is tried first: a tournament in progress is what a venue wants on
+// a screen. Failing that, the most recently COMPLETED tournament is used.
+//
+// That fallback is the correction to the original heuristic, which took the
+// last entry in the schedule. Part-way through a season that is an event which
+// has not been played, and the provider has no leaderboard for it at all:
+//
+//	{"detail":"leaderboards not found for query {'tournId': '551', ...}"}
+//
+// Falling back to a completed tournament means the feed always has a real
+// leaderboard to publish between events, rather than erroring until the next
+// tee-off.
+func (s *Schedule) Current(t time.Time) (ScheduleEntry, bool) {
+	for _, e := range s.Schedule {
+		if e.InProgress(t) {
+			return e, true
+		}
+	}
+	var best ScheduleEntry
+	var found bool
+	for _, e := range s.Schedule {
+		if !e.Completed(t) {
+			continue
+		}
+		if !found || e.Date.End.Time.After(best.Date.End.Time) {
+			best, found = e, true
+		}
+	}
+	return best, found
 }
 
 // fetch performs one authenticated request.

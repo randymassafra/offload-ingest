@@ -228,6 +228,8 @@ func run() error {
 			Kinds:            pollKinds,
 			Seed:             opts.seed,
 			Batch:            opts.eventsPerPoll,
+			GolfAPIKey:       cfg.GolfAPIKey,
+			GolfCachePath:    cfg.GolfCachePath,
 			FlinkAddr:        firstNonEmpty(opts.flinkAddr, cfg.FlinkAddr),
 			FlinkTTL:         opts.flinkTTL,
 			Logger:           log,

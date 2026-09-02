@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -203,5 +204,133 @@ func TestScopeValidatorIsNilInSimulation(t *testing.T) {
 	r := &Runtime{mode: ModeSimulation}
 	if v := r.ScopeValidator(); v != nil {
 		t.Error("simulation should have no scope validator")
+	}
+}
+
+// --- multi-source fan-in ------------------------------------------------------
+
+// slowSource blocks until its interval elapses, like the API-Sports streamer,
+// which blocks internally until one of its verticals is due.
+type slowSource struct {
+	delay time.Duration
+	sport string
+	calls int32
+}
+
+func (s *slowSource) Next(ctx context.Context) ([]generators.Message, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(s.delay):
+	}
+	return []generators.Message{{Sport: generators.Sport(s.sport), FixtureID: "x"}}, nil
+}
+func (s *slowSource) Sports() []generators.Sport {
+	return []generators.Sport{generators.Sport(s.sport)}
+}
+func (s *slowSource) Mode() Mode   { return ModeProduction }
+func (s *slowSource) Close() error { return nil }
+
+// TestFanInDoesNotStarveASlowerSource is the regression guard for the bug that
+// made golf produce nothing at all.
+//
+// The first version polled sources in sequence. ProductionStreamer.Next blocks
+// internally until a vertical is due, so a sequential loop never returned
+// control and every source behind the first was starved. Golf was enabled,
+// correctly configured, and silent for a whole run.
+func TestFanInDoesNotStarveASlowerSource(t *testing.T) {
+	blocking := &slowSource{delay: 2 * time.Second, sport: "soccer"}
+	quick := &slowSource{delay: 10 * time.Millisecond, sport: "golf"}
+	m := NewMultiStreamer(quiet(), blocking, quick)
+	defer m.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// The quick source must produce well before the blocking one would.
+	start := time.Now()
+	msgs, err := m.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("no messages")
+	}
+	if msgs[0].Sport != "golf" {
+		t.Errorf("first batch came from %q; the quick source should not wait on the slow one", msgs[0].Sport)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("took %s; the quick source was blocked behind the slow one", elapsed)
+	}
+}
+
+// TestFanInSurfacesEverySource: both sources must eventually be represented.
+func TestFanInSurfacesEverySource(t *testing.T) {
+	a := &slowSource{delay: 10 * time.Millisecond, sport: "soccer"}
+	b := &slowSource{delay: 10 * time.Millisecond, sport: "golf"}
+	m := NewMultiStreamer(quiet(), a, b)
+	defer m.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	seen := map[generators.Sport]bool{}
+	for i := 0; i < 40 && len(seen) < 2; i++ {
+		msgs, err := m.Next(ctx)
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		for _, msg := range msgs {
+			seen[msg.Sport] = true
+		}
+	}
+	if !seen["soccer"] || !seen["golf"] {
+		t.Errorf("saw %v, want both sources represented", seen)
+	}
+}
+
+// TestFanInIgnoresNilSources so a caller can pass an optional streamer without
+// guarding it.
+func TestFanInIgnoresNilSources(t *testing.T) {
+	m := NewMultiStreamer(quiet(), nil, &slowSource{delay: time.Millisecond, sport: "golf"}, nil)
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := m.Next(ctx); err != nil {
+		t.Errorf("Next: %v", err)
+	}
+	if got := m.Sports(); len(got) != 1 {
+		t.Errorf("Sports = %v, want just the one live source", got)
+	}
+}
+
+// TestFanInStopsItsGoroutinesOnClose keeps a restart in the same process from
+// leaking one worker per source.
+func TestFanInStopsItsGoroutinesOnClose(t *testing.T) {
+	before := runtime.NumGoroutine()
+	m := NewMultiStreamer(quiet(),
+		&slowSource{delay: 50 * time.Millisecond, sport: "soccer"},
+		&slowSource{delay: 50 * time.Millisecond, sport: "golf"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Next(ctx)
+	cancel()
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= before+1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("goroutines leaked: %d before, %d after Close", before, runtime.NumGoroutine())
+}
+
+func TestFanInWithNoSourcesIsAnError(t *testing.T) {
+	if _, err := NewMultiStreamer(quiet()).Next(context.Background()); err == nil {
+		t.Error("want an error with no sources configured")
 	}
 }

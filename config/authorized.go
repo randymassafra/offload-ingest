@@ -39,7 +39,96 @@ type AuthorizedScope = scope.AuthorizedScope
 // NFL, not the world. Regions describe a package; they must never become a
 // second, looser path to content.
 func AuthorizedScopes(licensedSports, licensedRegions []string) (authorized []AuthorizedScope, unconstrained []string) {
-	return AuthorizedScopesFor(apisports.Entitled(licensedSports, licensedRegions), licensedRegions)
+	return AuthorizedScopesWith(licensedSports, licensedRegions, nil)
+}
+
+// AuthorizedScopesWith aggregates claims, honouring an optional per-sport
+// restriction from the licence.
+//
+// restrictions maps a sport to the league or tour ids that sport is limited to.
+// It is how a licence sells golf as "PGA only" rather than "golf". A sport
+// absent from the map is unrestricted within itself, which is the default and
+// what every licence issued so far means.
+func AuthorizedScopesWith(licensedSports, licensedRegions []string, restrictions map[string][]int) (authorized []AuthorizedScope, unconstrained []string) {
+	authorized, unconstrained = AuthorizedScopesFor(
+		apisports.Entitled(licensedSports, licensedRegions), licensedRegions)
+
+	// Sports API-Sports does not serve.
+	//
+	// Without this the validator would not recognise them at all and would
+	// refuse every one of their records as an unlicensed sport — silently
+	// discarding an entire feed the venue had paid for. The bindings above only
+	// cover the primary provider; a licence covers the whole estate.
+	regionOf := regionIndex(licensedRegions)
+	for _, raw := range licensedSports {
+		sport := strings.ToLower(strings.TrimSpace(raw))
+		if sport == "" || apisports.Serves(apisports.Sport(sport)) {
+			continue // already handled by the bindings above
+		}
+		// A region claim narrows: a sport the licence names but no licensed
+		// bundle covers is not granted.
+		if len(licensedRegions) > 0 {
+			if _, inRegion := regionOf[sport]; !inRegion && !servedOutsideRegions(sport) {
+				continue
+			}
+		}
+		source := "sport"
+		if r, ok := regionOf[sport]; ok {
+			source = "region:" + r
+		}
+		ids := restrictions[sport]
+		if len(ids) == 0 {
+			unconstrained = append(unconstrained, sport)
+			continue
+		}
+		for _, id := range ids {
+			authorized = append(authorized, AuthorizedScope{
+				Sport: sport, ID: id, Source: source, Name: tourName(sport, id),
+			})
+		}
+	}
+	sort.Strings(unconstrained)
+	return scope.Aggregate(authorized), dedupe(unconstrained)
+}
+
+// servedOutsideRegions reports whether a sport belongs to no regional bundle.
+//
+// Cricket, tennis, golf and NASCAR are not in any bundle, because the bundles
+// were drawn around what API-Sports serves. Excluding them whenever a region
+// claim is present would revoke four sports from every licence that names one,
+// so they are granted on the sport claim alone.
+func servedOutsideRegions(sport string) bool {
+	switch sport {
+	case "cricket", "tennis", "golf", "nascar":
+		return true
+	}
+	return false
+}
+
+// tourName documents the tour ids for sports scoped that way.
+func tourName(sport string, id int) string {
+	if sport == "golf" {
+		switch id {
+		case 1:
+			return "PGA Tour"
+		case 2:
+			return "LIV Tour"
+		}
+	}
+	return ""
+}
+
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	out := in[:0]
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // AuthorizedScopesFor builds the list from bindings that have already been

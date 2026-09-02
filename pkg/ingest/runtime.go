@@ -9,6 +9,7 @@ import (
 
 	"github.com/offloadintelligence/offload-ingest/internal/generators"
 	"github.com/offloadintelligence/offload-ingest/internal/producer"
+	golfprovider "github.com/offloadintelligence/offload-ingest/internal/provider/golf"
 	"github.com/offloadintelligence/offload-ingest/pkg/ingest/apisports"
 	"github.com/offloadintelligence/offload-ingest/pkg/licensing"
 	"github.com/offloadintelligence/offload-ingest/pkg/metrics"
@@ -59,6 +60,13 @@ type RuntimeConfig struct {
 
 	// BaseWeights overrides the venue's crowd-interest profile.
 	BaseWeights map[apisports.Vertical]float64
+
+	// GolfAPIKey enables the golf provider in production. Golf has no
+	// API-Sports host, so it is fetched by its own client and merged into the
+	// same stream — and therefore through the same scope enforcement.
+	GolfAPIKey string
+	// GolfCachePath overrides where the golf leaderboard is cached.
+	GolfCachePath string
 
 	// FlinkAddr optionally enables the downstream state-buffer scraper. Empty
 	// leaves it off, which is the recommended architecture — see flink.go.
@@ -177,7 +185,34 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.prod, r.streamer = prod, prod
+	r.prod = prod
+
+	// Golf rides alongside. It is a different vendor on a different cadence,
+	// but merging at the DataStreamer seam means everything downstream —
+	// scope enforcement, metrics, the producer — treats it identically, and no
+	// record can reach a topic by a route that skips the licence check.
+	var sources []DataStreamer
+	sources = append(sources, prod)
+	if claims.AllowsSport(string(generators.SportGolf)) && strings.TrimSpace(cfg.GolfAPIKey) != "" {
+		gc := golfprovider.New(cfg.GolfAPIKey)
+		if cfg.GolfCachePath != "" {
+			gc = gc.Configure(golfprovider.WithCachePath(cfg.GolfCachePath))
+		}
+		gs, err := NewGolfStreamer(GolfConfig{
+			Client: gc, Registry: r.registry, Logger: cfg.Logger, Now: cfg.Now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, gs)
+		cfg.Logger.Info("golf ingestion enabled",
+			"host", golfprovider.Host, "poll_every", GolfPollInterval.String())
+	}
+	if len(sources) == 1 {
+		r.streamer = prod
+	} else {
+		r.streamer = NewMultiStreamer(cfg.Logger, sources...)
+	}
 
 	// What the plan actually buys, said once at startup so nobody has to work
 	// it out from a dashboard later.

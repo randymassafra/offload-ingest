@@ -413,3 +413,126 @@ func contains(haystack, needle string) bool {
 			return false
 		}()
 }
+
+// --- schedule dates and tournament selection ---------------------------------
+
+// TestMongoDateAcceptsEveryObservedForm. The same endpoint has been seen
+// returning both the extended-JSON epoch and a bare zone-less timestamp,
+// apparently depending on how the request is made.
+func TestMongoDateAcceptsEveryObservedForm(t *testing.T) {
+	want := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	for _, raw := range []string{
+		`{"$date":{"$numberLong":"1735776000000"}}`,
+		`{"$date":"2025-01-02T00:00:00"}`,
+		`"2025-01-02T00:00:00Z"`,
+		`"2025-01-02"`,
+		`"1735776000000"`,
+		`1735776000000`,
+	} {
+		var d MongoDate
+		if err := json.Unmarshal([]byte(raw), &d); err != nil {
+			t.Errorf("%s: %v", raw, err)
+			continue
+		}
+		if !d.Time.Equal(want) {
+			t.Errorf("%s = %s, want %s", raw, d.Time, want)
+		}
+	}
+
+	var zero MongoDate
+	for _, raw := range []string{`null`, `{}`, `""`} {
+		if err := json.Unmarshal([]byte(raw), &zero); err != nil || !zero.IsZero() {
+			t.Errorf("%s should decode to the zero time, got %s (%v)", raw, zero.Time, err)
+		}
+	}
+}
+
+// TestMongoDateIsMillisecondsNotSeconds. Reading the epoch as seconds yields a
+// date in the year 56000, which sorts and compares without erroring — so a
+// window check would simply never match and golf would go silent.
+func TestMongoDateIsMillisecondsNotSeconds(t *testing.T) {
+	var d MongoDate
+	if err := json.Unmarshal([]byte(`{"$date":{"$numberLong":"1735776000000"}}`), &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if y := d.Time.Year(); y != 2025 {
+		t.Errorf("year = %d, want 2025 — the epoch is milliseconds, not seconds", y)
+	}
+}
+
+func scheduleFor(t *testing.T) *Schedule {
+	t.Helper()
+	mk := func(id, name string, start, end time.Time) ScheduleEntry {
+		var e ScheduleEntry
+		e.TournID, e.Name = id, name
+		e.Date.Start = MongoDate{start}
+		e.Date.End = MongoDate{end}
+		return e
+	}
+	d := func(m, day int) time.Time { return time.Date(2026, time.Month(m), day, 0, 0, 0, 0, time.UTC) }
+	return &Schedule{Schedule: []ScheduleEntry{
+		mk("001", "January Open", d(1, 8), d(1, 11)),
+		mk("002", "August Championship", d(8, 27), d(8, 30)),
+		mk("003", "December Invitational", d(12, 12), d(12, 15)),
+	}}
+}
+
+// TestCurrentPrefersTheTournamentInProgress.
+func TestCurrentPrefersTheTournamentInProgress(t *testing.T) {
+	s := scheduleFor(t)
+	// Saturday of the August event.
+	pick, ok := s.Current(time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC))
+	if !ok || pick.TournID != "002" {
+		t.Fatalf("got %+v (ok=%v), want the in-progress August event", pick.TournID, ok)
+	}
+	if !pick.InProgress(time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)) {
+		t.Error("InProgress disagrees with Current")
+	}
+}
+
+// TestFinalRoundEveningStillCountsAsInProgress. The window runs to the end of
+// the final day: a leaderboard is at its most interesting on Sunday evening,
+// and an exclusive comparison would drop the tournament exactly then.
+func TestFinalRoundEveningStillCountsAsInProgress(t *testing.T) {
+	s := scheduleFor(t)
+	sundayEvening := time.Date(2026, 8, 30, 22, 0, 0, 0, time.UTC)
+	pick, ok := s.Current(sundayEvening)
+	if !ok || pick.TournID != "002" {
+		t.Errorf("Sunday evening resolved to %q, want the event still in progress", pick.TournID)
+	}
+}
+
+// TestCurrentFallsBackToTheMostRecentlyCompleted is the fix for the original
+// bug: taking the last schedule entry picked an unplayed December event for
+// which the provider has no leaderboard at all.
+func TestCurrentFallsBackToTheMostRecentlyCompleted(t *testing.T) {
+	s := scheduleFor(t)
+	// September: between the August and December events.
+	pick, ok := s.Current(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
+	if !ok {
+		t.Fatal("no tournament resolved between events")
+	}
+	if pick.TournID != "002" {
+		t.Errorf("resolved %q, want the most recently completed event, not the future one", pick.TournID)
+	}
+	if pick.TournID == "003" {
+		t.Error("resolved the unplayed December event — the original bug")
+	}
+}
+
+// TestCurrentReportsNothingBeforeTheSeasonOpens, so the caller can fall back to
+// the previous season rather than requesting a leaderboard that cannot exist.
+func TestCurrentReportsNothingBeforeTheSeasonOpens(t *testing.T) {
+	s := scheduleFor(t)
+	if _, ok := s.Current(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); ok {
+		t.Error("a tournament was resolved before any had been played")
+	}
+}
+
+func TestEntryWithNoDatesIsNeverSelected(t *testing.T) {
+	var e ScheduleEntry
+	now := time.Now()
+	if e.InProgress(now) || e.Completed(now) {
+		t.Error("an entry with no dates should be neither in progress nor completed")
+	}
+}
