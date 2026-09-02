@@ -276,7 +276,7 @@ func (t *tennisSim) competitor(side int) allscores.Competitor {
 		ImageVersion:      1,
 		Color:             "#7f97ab",
 		MainCompetitionID: t.competitionID,
-		CreatedAt:         sdioDateTime(t.start.AddDate(-3, 0, 0)),
+		CreatedAt:         easternDateTime(t.start.AddDate(-3, 0, 0)),
 	}
 }
 
@@ -307,7 +307,7 @@ func (t *tennisSim) gameModel() allscores.Game {
 		StageNum:                     t.period,
 		StageName:                    t.stageName,
 		CompetitionDisplayName:       t.competition,
-		StartTime:                    sdioDateTime(t.start),
+		StartTime:                    easternDateTime(t.start),
 		StatusGroup:                  group,
 		StatusText:                   status,
 		ShortStatusText:              short,

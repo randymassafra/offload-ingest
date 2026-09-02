@@ -10,11 +10,11 @@ import (
 func TestLoadEnvReadsFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
-	if err := os.WriteFile(path, []byte("SPORTS_DATA_IO_API_KEY=abcd1234efgh5678\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("APISPORTS_KEY=abcd1234efgh5678\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SPORTS_DATA_IO_API_KEY", "")
-	os.Unsetenv("SPORTS_DATA_IO_API_KEY")
+	t.Setenv("APISPORTS_KEY", "")
+	os.Unsetenv("APISPORTS_KEY")
 
 	got, err := LoadEnv(path)
 	if err != nil {
@@ -33,10 +33,10 @@ func TestLoadEnvReadsFile(t *testing.T) {
 func TestRealEnvironmentWins(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
-	if err := os.WriteFile(path, []byte("SPORTS_DATA_IO_API_KEY=from-file\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("APISPORTS_KEY=from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SPORTS_DATA_IO_API_KEY", "from-environment")
+	t.Setenv("APISPORTS_KEY", "from-environment")
 
 	if _, err := LoadEnv(path); err != nil {
 		t.Fatalf("LoadEnv: %v", err)
@@ -60,7 +60,7 @@ func TestMissingFileIsNotAnError(t *testing.T) {
 
 func TestLoadEnvSearchesParents(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SPORTS_DATA_IO_API_KEY=parent-key\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("APISPORTS_KEY=parent-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	nested := filepath.Join(root, "cmd", "loadtest")
@@ -68,8 +68,8 @@ func TestLoadEnvSearchesParents(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(nested)
-	t.Setenv("SPORTS_DATA_IO_API_KEY", "")
-	os.Unsetenv("SPORTS_DATA_IO_API_KEY")
+	t.Setenv("APISPORTS_KEY", "")
+	os.Unsetenv("APISPORTS_KEY")
 
 	got, err := LoadEnv("")
 	if err != nil {
@@ -83,15 +83,6 @@ func TestLoadEnvSearchesParents(t *testing.T) {
 	}
 }
 
-func TestAliasIsAccepted(t *testing.T) {
-	t.Setenv("SPORTS_DATA_IO_API_KEY", "")
-	os.Unsetenv("SPORTS_DATA_IO_API_KEY")
-	t.Setenv("SPORTSDATAIO_API_KEY", "legacy-name")
-	if got := APIKey(); got != "legacy-name" {
-		t.Errorf("APIKey = %q, want the alias to be honoured", got)
-	}
-}
-
 // TestMalformedFileFails covers the inputs godotenv actually rejects: a line
 // with no assignment, and an unterminated quoted value. A silently ignored
 // syntax error would leave the process running without the credential it
@@ -99,7 +90,7 @@ func TestAliasIsAccepted(t *testing.T) {
 func TestMalformedFileFails(t *testing.T) {
 	cases := map[string]string{
 		"line with no assignment": "notakeyvalueline\n",
-		"unterminated quote":      "SPORTS_DATA_IO_API_KEY=\"unterminated\n",
+		"unterminated quote":      "APISPORTS_KEY=\"unterminated\n",
 	}
 	for name, body := range cases {
 		dir := t.TempDir()
@@ -144,7 +135,6 @@ func TestLoadReadsEveryVariableOnce(t *testing.T) {
 		"OFFLOAD_LICENSE_PATH":    "/etc/offload/license.key",
 		"OFFLOAD_LICENSE_PUBKEY":  "cHVibGljLWtleQ==",
 		"APISPORTS_KEY":           "api-sports-key",
-		"SPORTS_DATA_IO_API_KEY":  "sdio-key",
 		"GOLF_API_KEY":            "golf-key",
 		"RAPIDAPI_KEY":            "rapid-key",
 		"RAPIDAPI_CRICKET_HOST":   "cricket.example",
@@ -169,7 +159,7 @@ func TestLoadReadsEveryVariableOnce(t *testing.T) {
 	for name, got := range map[string]string{
 		"Mode": cfg.Mode, "LicensePath": cfg.LicensePath,
 		"LicensePublicKey": cfg.LicensePublicKey, "APISportsKey": cfg.APISportsKey,
-		"SportsDataIOKey": cfg.SportsDataIOKey, "GolfAPIKey": cfg.GolfAPIKey,
+		"GolfAPIKey":  cfg.GolfAPIKey,
 		"RapidAPIKey": cfg.RapidAPIKey, "RapidAPICricketHost": cfg.RapidAPICricketHost,
 		"RapidAPIAllScoresHost": cfg.RapidAPIAllScoresHost,
 		"DashboardAddr":         cfg.DashboardAddr, "MetricsAddr": cfg.MetricsAddr,
@@ -189,11 +179,11 @@ func TestLoadReadsEveryVariableOnce(t *testing.T) {
 // RapidAPI-hosted, so the fallback must be the RapidAPI key.
 //
 // This is a regression test for a real failure: the fallback was the
-// SportsDataIO key, and a live run sent that to RapidAPI and got HTTP 403. A
+// key for a different vendor, and a live run sent it to RapidAPI and got 403. A
 // credential fallback has to follow whichever vendor actually serves the feed.
 func TestGolfKeyFallsBackToRapidAPI(t *testing.T) {
 	t.Setenv("GOLF_API_KEY", "")
-	t.Setenv("SPORTS_DATA_IO_API_KEY", "sdio-key-wrong-vendor")
+	t.Setenv("APISPORTS_KEY", "wrong-vendor-key")
 	t.Setenv("RAPIDAPI_KEY", "rapid-key")
 	cfg, err := Load("")
 	if err != nil {
@@ -202,8 +192,8 @@ func TestGolfKeyFallsBackToRapidAPI(t *testing.T) {
 	if cfg.GolfAPIKey != "rapid-key" {
 		t.Errorf("GolfAPIKey = %q, want the RapidAPI key as fallback", cfg.GolfAPIKey)
 	}
-	if cfg.GolfAPIKey == "sdio-key-wrong-vendor" {
-		t.Error("golf must not receive a SportsDataIO key; live-golf-data is RapidAPI-hosted")
+	if cfg.GolfAPIKey == "wrong-vendor-key" {
+		t.Error("golf must not receive another vendor's key; live-golf-data is RapidAPI-hosted")
 	}
 
 	// And a dedicated key takes precedence when provisioned.
@@ -219,8 +209,7 @@ func TestGolfKeyFallsBackToRapidAPI(t *testing.T) {
 // them one restart at a time.
 func TestValidateReportsEveryMissingFieldAtOnce(t *testing.T) {
 	for _, k := range []string{
-		"APISPORTS_KEY", "SPORTS_DATA_IO_API_KEY", "SPORTSDATAIO_API_KEY",
-		"GOLF_API_KEY", "RAPIDAPI_KEY",
+		"APISPORTS_KEY", "APISPORTS_KEY", "GOLF_API_KEY", "RAPIDAPI_KEY",
 	} {
 		t.Setenv(k, "")
 	}

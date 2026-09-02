@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// Feed simulates one fixture and renders the payload a single SportsDataIO
+// Feed simulates one fixture and renders the payload a single provider
 // endpoint would return. Implementations are NOT safe for concurrent use: give
 // each poller worker and each burst emitter its own feed.
 type Feed interface {
-	// Endpoint describes the SportsDataIO endpoint this feed imitates.
+	// Endpoint describes the provider endpoint this feed imitates.
 	Endpoint() Endpoint
 	// FixtureID is the provider's identifier for the event being simulated. It
 	// is the Kafka partition key and is stable until Reset.
@@ -38,7 +38,7 @@ type sim interface {
 
 // renderer builds the payload for one endpoint from a sim's current state.
 //
-// It returns the sdio value to marshal; the model name comes from the Endpoint
+// It returns the wire model to marshal; the model name comes from the Endpoint
 // unless the renderer overrides it (soccer's timeline emits three record types).
 //
 // ok reports whether this tick produced something new. An event-driven feed —
@@ -60,7 +60,7 @@ type registration struct {
 }
 
 // The registry is a slice per sport rather than a map keyed by kind, because a
-// sport can expose several endpoints of the same kind — NASCAR publishes both a
+// sport can expose several endpoints of the same kind — a season schedule and a
 // season schedule and a driver directory, and both are reference documents.
 var (
 	registryMu sync.RWMutex
@@ -89,7 +89,7 @@ func register(ep Endpoint, f factory) {
 		if ep.Provenance == ProvenanceModeled {
 			ep.Provider = ProviderNone
 		} else {
-			ep.Provider = ProviderSportsDataIO
+			ep.Provider = ProviderLiveGolf
 		}
 	}
 
@@ -181,7 +181,7 @@ func New(sport Sport, kind FeedKind, seed int64) (Feed, error) {
 }
 
 // NewNamed builds a specific endpoint when a sport exposes more than one of a
-// kind, such as NASCAR's schedule and driver directory.
+// kind, such as a season schedule alongside a driver directory.
 func NewNamed(sport Sport, kind FeedKind, name string, seed int64) (Feed, error) {
 	registryMu.RLock()
 	reg, ok := lookup(sport, kind, name)
@@ -220,7 +220,7 @@ func NewAll(sports []Sport, kinds []FeedKind, seed int64) ([]Feed, error) {
 			return nil, fmt.Errorf("generators: unknown sport %q", sp)
 		}
 		// Iterate the registrations rather than the kinds, so a sport that
-		// exposes several endpoints of one kind — NASCAR's schedule and driver
+		// exposes several endpoints of one kind — a schedule and a driver
 		// directory are both reference documents — contributes all of them.
 		for _, ep := range EndpointsFor(sp) {
 			if !want[ep.Kind] {

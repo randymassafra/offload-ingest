@@ -1,7 +1,7 @@
 // Package cricbuzz holds Go structs mirroring the Cricbuzz API's wire format,
 // as served through RapidAPI.
 //
-// This is the second provider in the pipeline. SportsDataIO covers every other
+// Cricket has no API-Sports host, so it is served here. The primary provider covers every other
 // sport but offers no cricket at all — /v3/cricket, /cricket/v1 and every other
 // prefix return 404, not the 401 an unsubscribed-but-real product returns — so
 // cricket comes from a different vendor with entirely different conventions:
@@ -11,7 +11,7 @@
 //     all arrive quoted, because the API formats them for display.
 //   - The document is a scorecard of innings, each carrying its own batsman,
 //     bowler, fall-of-wicket and partnership collections, rather than the flat
-//     per-player stat arrays SportsDataIO returns.
+//     per-player stat arrays the other providers return.
 //
 // GENERATED FROM CAPTURED RESPONSES — regenerate with:
 //

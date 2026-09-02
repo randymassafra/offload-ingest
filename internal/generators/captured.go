@@ -13,10 +13,10 @@ import (
 // simulating them.
 //
 // This is the escape hatch for the sports whose schema we could not verify.
-// Tennis is the immediate case: SportsDataIO sells the feed but publishes no
-// reachable schema, so the generated models in internal/sdio/tennis.go are an
-// educated guess. Rather than leave the load test running against a guess,
-// capture one real response per endpoint and drop it in a directory:
+// Tennis was the case it was built for: the feed was modelled from an
+// unreachable schema, so the structs were an educated guess. Rather than leave
+// the load test running against a guess, capture one real response per
+// endpoint and drop it in a directory:
 //
 //	fixtures/
 //	  tennis.boxscore.json      a single document, or an array of documents

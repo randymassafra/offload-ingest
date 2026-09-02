@@ -38,7 +38,7 @@ func TestDiscardCountsMessages(t *testing.T) {
 }
 
 // TestWriterEmitsBarePayload is the contract that makes these payloads useful:
-// the message body must be the SportsDataIO document alone, with none of our
+// the message body must be the provider's document alone, with none of our
 // routing metadata mixed in, or a Flink job cannot use a generated schema.
 func TestWriterEmitsBarePayload(t *testing.T) {
 	var buf bytes.Buffer
@@ -68,7 +68,7 @@ func TestWriterEmitsBarePayload(t *testing.T) {
 func TestEnvelopeWriterIncludesRouting(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewEnvelopeWriter(&buf)
-	if err := w.Publish(context.Background(), sample(t, generators.SportNASCAR, generators.FeedTelemetry, 1)...); err != nil {
+	if err := w.Publish(context.Background(), sample(t, generators.SportGolf, generators.FeedTelemetry, 1)...); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	var env map[string]any

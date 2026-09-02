@@ -93,13 +93,13 @@ func AuthorizedScopesWith(licensedSports, licensedRegions []string, restrictions
 
 // servedOutsideRegions reports whether a sport belongs to no regional bundle.
 //
-// Cricket, tennis, golf and NASCAR are not in any bundle, because the bundles
-// were drawn around what API-Sports serves. Excluding them whenever a region
-// claim is present would revoke four sports from every licence that names one,
-// so they are granted on the sport claim alone.
+// Cricket, tennis and golf are not in any bundle, because the bundles were
+// drawn around what API-Sports serves. Excluding them whenever a region claim
+// is present would revoke three sports from every licence that names one, so
+// they are granted on the sport claim alone.
 func servedOutsideRegions(sport string) bool {
 	switch sport {
-	case "cricket", "tennis", "golf", "nascar":
+	case "cricket", "tennis", "golf":
 		return true
 	}
 	return false

@@ -139,10 +139,9 @@ func run() error {
 	// Redacted, always: enough to tell which credential is loaded, never
 	// enough to use it.
 	for name, key := range map[string]string{
-		"api-sports":    cfg.APISportsKey,
-		"sportsdata.io": cfg.SportsDataIOKey,
-		"golf":          cfg.GolfAPIKey,
-		"rapidapi":      cfg.RapidAPIKey,
+		"api-sports": cfg.APISportsKey,
+		"golf":       cfg.GolfAPIKey,
+		"rapidapi":   cfg.RapidAPIKey,
 	} {
 		if key != "" {
 			log.Debug("credential available", "provider", name, "key", config.Redact(key))
@@ -396,8 +395,8 @@ func parseFlags(cfg *config.Config) *options {
 	flag.DurationVar(&o.pollInterval, "poll-interval", pdef.Interval, "base interval between polls")
 	flag.DurationVar(&o.pollJitter, "poll-jitter", pdef.Jitter, "random jitter added to each poll interval")
 	flag.IntVar(&o.eventsPerPoll, "events-per-poll", pdef.EventsPerPoll, "events returned by a single poll")
-	flag.StringVar(&o.pollEndpoints, "poll-endpoints", "", "comma-separated live SportsDataIO URLs to poll; empty uses the in-process mock provider")
-	flag.StringVar(&o.apiKey, "api-key", "", "SportsDataIO subscription key for -poll-endpoints (prefer SPORTSDATAIO_API_KEY)")
+	flag.StringVar(&o.pollEndpoints, "poll-endpoints", "", "comma-separated live provider URLs to poll; empty uses the in-process mock provider")
+	flag.StringVar(&o.apiKey, "api-key", "", "provider key for -poll-endpoints")
 	flag.StringVar(&o.envFile, "env-file", "", "path to a .env file; empty searches the working directory and its parents")
 	flag.StringVar(&o.capturedDir, "captured-dir", "", "directory of captured provider responses (<sport>.<kind>.json) to replay instead of simulating")
 	flag.StringVar(&o.httpSport, "poll-endpoint-sport", "nfl", "sport label applied to payloads from -poll-endpoints")
@@ -429,7 +428,7 @@ func parseFlags(cfg *config.Config) *options {
 	flag.BoolVar(&o.stdout, "stdout", false, "also print every event as newline-delimited JSON")
 	flag.StringVar(&o.logLevel, "log-level", "info", "debug|info|warn|error")
 	flag.BoolVar(&o.showVersion, "version", false, "print version and exit")
-	flag.BoolVar(&o.listEndpoints, "endpoints", false, "list every SportsDataIO endpoint the generators cover, then exit")
+	flag.BoolVar(&o.listEndpoints, "endpoints", false, "list every provider endpoint the generators cover, then exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),
@@ -445,7 +444,7 @@ func parseFlags(cfg *config.Config) *options {
 		o.saslPassword = env
 	}
 	if o.apiKey == "" {
-		o.apiKey = cfg.SportsDataIOKey
+		o.apiKey = cfg.APISportsKey
 	}
 	if env := cfg.KafkaBrokers; env != "" && !flagPassed("brokers") {
 		o.brokers = env
@@ -529,7 +528,7 @@ func buildPoller(o *options, sports []generators.Sport, kinds []generators.FeedK
 			return nil, err
 		}
 		cfg.Fetcher = f
-		log.Info("polling live SportsDataIO endpoints", "count", len(eps), "sport", sport, "kind", kind, "authenticated", o.apiKey != "")
+		log.Info("polling live provider endpoints", "count", len(eps), "sport", sport, "kind", kind, "authenticated", o.apiKey != "")
 	}
 	return poller.New(cfg, sink)
 }
@@ -646,7 +645,7 @@ func flagPassed(name string) bool {
 func round1(f float64) float64 { return float64(int(f*10+0.5)) / 10 }
 
 // printEndpoints lists the generated catalog, flagging the feeds whose schema
-// could not be verified against SportsDataIO.
+// could not be verified against a live provider.
 func printEndpoints() {
 	eps := generators.Endpoints()
 	fmt.Printf("%-8s %-20s %-13s %-10s %-22s %-46s %s\n",
@@ -696,8 +695,8 @@ func printEndpoints() {
 		}
 	}
 	if counts[generators.ProvenanceModeled] > 0 {
-		fmt.Println("\nMODELED feeds follow SportsDataIO conventions but describe no verified")
-		fmt.Println("endpoint. See the provenance headers in internal/sdio before trusting them.")
+		fmt.Println("\nMODELED feeds follow their provider's conventions but describe no verified")
+		fmt.Println("endpoint. See the provider package's doc comment before trusting them.")
 	}
 }
 

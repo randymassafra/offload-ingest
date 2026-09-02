@@ -119,18 +119,8 @@ func runRoutes(fixtureRoot string) error {
 // works off the endpoint's Provider field.
 func upstream(ep generators.Endpoint, cfg *config.Config) (string, map[string]string, bool) {
 	switch ep.Provider {
-	case generators.ProviderSportsDataIO:
-		// Golf and NASCAR. Golf takes the golf-specific credential, which
-		// resolves to the shared SportsDataIO key until one is provisioned.
-		key := cfg.SportsDataIOKey
-		if ep.Sport == "golf" {
-			key = cfg.GolfAPIKey
-		}
-		if key == "" {
-			return "", nil, false
-		}
-		return "https://api.sportsdata.io",
-			map[string]string{"Ocp-Apim-Subscription-Key": key}, true
+	case generators.ProviderLiveGolf:
+		return rapidAPI(cfg.GolfAPIKey, "live-golf-data.p.rapidapi.com")
 	case generators.ProviderCricbuzz:
 		return rapidAPI(cfg.RapidAPIKey, cfg.RapidAPICricketHost)
 	case generators.ProviderAllScores:
@@ -229,17 +219,7 @@ func buildParams(root string) (map[string]string, error) {
 		file, key, param string
 		done             string // only take records where this field is truthy
 	}
-	picks := []pick{
-		{"sportsdataio/nfl/scores_by_week.json", "HomeTeam", "nfl.hometeam", ""},
-		{"sportsdataio/nba/games_by_date.json", "GameID", "nba.gameid", "Status"},
-		{"sportsdataio/ncaab/games_by_date.json", "GameID", "ncaab.gameid", "Status"},
-		{"sportsdataio/ncaaf/games_by_week.json", "GameID", "ncaaf.gameid", "Status"},
-		{"sportsdataio/golf/tournaments.json", "TournamentID", "tournamentid", "IsOver"},
-		{"sportsdataio/golf/players.json", "PlayerID", "playerid", ""},
-		{"sportsdataio/mma/schedule.json", "EventId", "eventid", "Status"},
-		{"sportsdataio/mma/fighters.json", "FighterId", "fighterid", ""},
-		{"sportsdataio/nascar/races.json", "RaceID", "raceid", "IsOver"},
-	}
+	picks := []pick{}
 	for _, pk := range picks {
 		doc, err := load(root, pk.file)
 		if err != nil {

@@ -220,7 +220,7 @@ license:
 		-tenant $(or $(TENANT),dev-venue) \
 		-venue "$(or $(VENUE),Development Venue)" \
 		-tier $(or $(TIER),free) \
-		-sports $(or $(SPORTS),nfl,ncaaf,ncaab,nba,soccer,afl,rugby,cricket,tennis,golf,ufc,mma,nascar,f1) \
+		-sports $(or $(SPORTS),nfl,ncaaf,ncaab,nba,soccer,afl,rugby,cricket,tennis,golf,ufc,mma,f1) \
 		-regions $(or $(REGIONS),global) \
 		-fingerprint $$(go run ./cmd/licensetool fingerprint) \
 		-days $(or $(DAYS),365) \

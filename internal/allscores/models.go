@@ -29,8 +29,8 @@ package allscores
 // The optional fields really are omitted rather than sent as zero or null: an
 // unplayed set carries only its id, name and -1 scores, and the extra-score
 // columns appear only when a set went to a tiebreak. omitempty reproduces that,
-// which is the opposite of the SportsDataIO models where a nullable field is
-// always present.
+// which is the opposite of a provider that always sends the key with a null
+// value.
 type Stage struct {
 	ID                       int    `json:"id"`
 	Name                     string `json:"name"`

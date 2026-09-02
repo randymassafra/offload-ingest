@@ -273,7 +273,8 @@ func TestBulkModeMatchesWhatTheAPIAccepts(t *testing.T) {
 // TestSportsAPISportsCannotServe records the coverage gap that kept three
 // providers in the pipeline.
 func TestSportsAPISportsCannotServe(t *testing.T) {
-	for _, s := range []Sport{"cricket", "tennis", "golf", "nascar"} {
+	// NASCAR was retired; API-Sports sells no motorsport product but F1.
+	for _, s := range []Sport{"cricket", "tennis", "golf"} {
 		if Serves(s) {
 			t.Errorf("%s is mapped to API-Sports, which has no host for it", s)
 		}

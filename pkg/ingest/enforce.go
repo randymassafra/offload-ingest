@@ -28,7 +28,7 @@ func (r *Runtime) ScopeValidator() *scope.Validator {
 	claims := r.validator.Claims()
 	// AuthorizedScopes, not AuthorizedScopesFor: the latter walks API-Sports
 	// bindings only, and a licence covers the whole estate. Using it here meant
-	// golf, cricket, tennis and NASCAR were absent from the validator, so the
+	// golf, cricket and tennis were absent from the validator, so the
 	// moment golf was wired in every one of its records would have been refused
 	// as an unlicensed sport — a feed the venue had paid for, silently gone.
 	authorized, unconstrained := config.AuthorizedScopes(claims.Sports, claims.Regions)

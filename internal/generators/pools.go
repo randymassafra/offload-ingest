@@ -1,7 +1,7 @@
 package generators
 
 // competitor is a pool entry: a club, a national side, a player or a driver.
-// ID and GlobalID mirror SportsDataIO's convention of a per-API id alongside a
+// ID and GlobalID mirror the convention of a per-API id alongside a
 // cross-API global id.
 type competitor struct {
 	ID       int
@@ -146,37 +146,6 @@ var (
 		{1107, 90001107, "COL", "Clay Collard", "USA"},
 		{1108, 90001108, "CAP", "Bruno Cappelozza", "BRA"},
 	}
-
-	// nascarDrivers is the Cup Series field, taken from a captured race result
-	// so the ids and names match what the provider actually returns.
-	nascarDrivers = []competitor{
-		{80000274, 80000274, "HAM", "Denny Hamlin", "USA"},
-		{80000296, 80000296, "MCD", "Michael McDowell", "USA"},
-		{80000261, 80000261, "KES", "Brad Keselowski", "USA"},
-		{80000286, 80000286, "BLA", "Ryan Blaney", "USA"},
-		{80000285, 80000285, "ELL", "Chase Elliott", "USA"},
-		{80000333, 80000333, "PRE", "Ryan Preece", "USA"},
-		{80000284, 80000284, "LOG", "Joey Logano", "USA"},
-		{80000268, 80000268, "BUS", "Kyle Busch", "USA"},
-		{80000402, 80000402, "HAL", "Justin Haley", "USA"},
-		{80000380, 80000380, "BEL", "Christopher Bell", "USA"},
-		{80000263, 80000263, "LAR", "Kyle Larson", "USA"},
-		{80000458, 80000458, "BER", "Josh Berry", "USA"},
-	}
-
-	// nascarNumbers and nascarMakes carry each driver's car number and
-	// manufacturer, both of which appear on every timing row.
-	nascarNumbers = map[int]string{
-		80000274: "11", 80000296: "34", 80000261: "2", 80000286: "12",
-		80000285: "9", 80000333: "37", 80000284: "22", 80000268: "18",
-		80000402: "77", 80000380: "20", 80000263: "5", 80000458: "31",
-	}
-
-	nascarMakes = map[int]string{
-		80000274: "Toyota", 80000296: "Chevrolet", 80000261: "Ford", 80000286: "Ford",
-		80000285: "Chevrolet", 80000333: "Ford", 80000284: "Ford", 80000268: "Chevrolet",
-		80000402: "Chevrolet", 80000380: "Toyota", 80000263: "Chevrolet", 80000458: "Ford",
-	}
 )
 
 var (
@@ -191,23 +160,6 @@ var (
 	tennisVenues  = []string{"Centre Court", "Philippe-Chatrier", "Arthur Ashe", "Rod Laver Arena"}
 	golfVenues    = []string{"Augusta National", "St Andrews", "Pebble Beach", "TPC Sawgrass"}
 	cageVenues    = []string{"T-Mobile Arena", "UFC Apex", "Madison Square Garden", "Etihad Arena"}
-	// nascarTeams maps each driver onto their race team, as the directory does.
-	nascarTeams = map[int]string{
-		80000274: "Joe Gibbs Racing", 80000296: "Spire Motorsports",
-		80000261: "RFK Racing", 80000286: "Team Penske",
-		80000285: "Hendrick Motorsports", 80000333: "RFK Racing",
-		80000284: "Team Penske", 80000268: "Richard Childress Racing",
-		80000402: "Spire Motorsports", 80000380: "Joe Gibbs Racing",
-		80000263: "Hendrick Motorsports", 80000458: "Wood Brothers Racing",
-	}
-
-	nascarBroadcasts = []string{"FOX", "NBC", "USA", "FS1", "TNT", "Prime Video"}
-
-	nascarTracks = []string{
-		"Atlanta Motor Speedway", "Bristol Motor Speedway", "Charlotte Motor Speedway",
-		"Daytona International Speedway", "Talladega Superspeedway", "Circuit of The Americas",
-		"Darlington Raceway", "Martinsville Speedway",
-	}
 )
 
 // --- API-Sports pools -------------------------------------------------------

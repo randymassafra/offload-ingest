@@ -68,11 +68,43 @@ Open items for the fleet rollout:
   document shapes are not yet evidenced. Re-run `make capture` in season and they
   promote themselves — the provenance test enforces that an empty card cannot
   count as proof.
-- **Production is API-Sports-only.** Cricket, tennis, golf and NASCAR have no
-  API-Sports host and are simulation-only in production mode. Adding them means
-  extending the production streamer to route per provider.
+- **The vendor list is closed at two: API-Sports and RapidAPI.** Every sport is
+  now served by API-Sports directly, or by a RapidAPI-hosted feed
+  (`livegolf` for golf, `cricbuzz` for cricket, `allscores` for tennis). Those
+  three share one authentication scheme and one host header, so onboarding
+  another is a host name in `upstream()` rather than a new client.
+  SportsDataIO was the third scheme and is gone — `internal/sdio/` is deleted,
+  along with its models, fixtures and key.
+- **Motorsport is Formula 1, and only Formula 1.** NASCAR was retired rather
+  than migrated. API-Sports sells no NASCAR host at any spelling, so keeping it
+  meant keeping an entire fourth vendor for one sport. Two RapidAPI candidates
+  were evaluated and neither closed the gap: `nascar-motorsport-api` wraps
+  ESPN's hidden API and is not subscribed; `motorsportapi` is a SofaScore
+  wrapper whose race-result endpoints could not be discovered. If NASCAR comes
+  back, it comes back as a RapidAPI provider under `internal/provider/`,
+  which is now a one-file addition.
 - **Formula 1 needs a paid plan.** The free tier serves seasons 2022–2024 only,
   so F1 stands down until the day rolls over. It will work on any paid tier.
+  This now gates the entire motorsport category, where it previously only
+  gated half of it.
+- **Cricket, tennis and golf are production-wired but not API-Sports.** Golf
+  runs through the same `ScopeValidator` and `MultiStreamer` fan-in as every
+  other sport; cricket and tennis are simulation-only in production mode until
+  their streamers are added.
+- **The capture-backed tests do not run on a clean clone.** `/fixtures/` is
+  gitignored, so `TestCapturedLeaderboardDecodes` and its sibling skip rather
+  than fail when the captures are absent — including in any CI that clones
+  fresh. They are a local guard today. Fixing this means either committing a
+  redacted capture per provider or running `make capture` as a CI step with a
+  live key; the first is cheaper and does not spend quota.
+- **Golf's payload is rebuilt, not passed through.** It is the one provider
+  whose Kafka value is re-marshalled from typed structs rather than forwarded
+  as provider bytes, because live-golf-data serves MongoDB extended JSON
+  (`{"$numberInt":"18"}`) that would otherwise reach every downstream consumer.
+  The cost is that an unmodelled field is silently dropped rather than carried,
+  so `TestCapturedLeaderboardKeepsEveryField` fails the build if the capture
+  ever contains a field the model does not. Worth revisiting if a second
+  provider ever needs the same treatment.
 
 ## Licensing
 

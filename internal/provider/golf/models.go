@@ -225,14 +225,16 @@ func (d MongoDate) IsZero() bool { return d.Time.IsZero() }
 
 // Leaderboard is the /leaderboard response.
 type Leaderboard struct {
-	OrgID       string    `json:"orgId"`
-	Year        string    `json:"year"`
-	TournID     string    `json:"tournId"`
-	Status      string    `json:"status"`
-	RoundID     MongoInt  `json:"roundId"`
-	RoundStatus string    `json:"roundStatus"`
-	LastUpdated string    `json:"lastUpdated"`
-	Timestamp   string    `json:"timestamp"`
+	OrgID       string   `json:"orgId"`
+	Year        string   `json:"year"`
+	TournID     string   `json:"tournId"`
+	Status      string   `json:"status"`
+	RoundID     MongoInt `json:"roundId"`
+	RoundStatus string   `json:"roundStatus"`
+	// LastUpdated and Timestamp are extended-JSON dates, not strings.
+	// Modelling them as strings looked right and failed against a live capture.
+	LastUpdated MongoDate `json:"lastUpdated"`
+	Timestamp   MongoDate `json:"timestamp"`
 	CutLines    []CutLine `json:"cutLines"`
 	Rows        []Row     `json:"leaderboardRows"`
 }
@@ -262,8 +264,43 @@ type Row struct {
 	StartingHole                    MongoInt `json:"startingHole"`
 	RoundComplete                   bool     `json:"roundComplete"`
 	Rounds                          []Round  `json:"rounds"`
-	Teetime                         string   `json:"teeTime,omitempty"`
+	// CurrentRound is the round being played and Thru how far through it the
+	// player is. Both were absent from the first pass at this model and turned
+	// up in a live capture — the argument for generating models from captured
+	// responses rather than from a reading of the documentation.
+	//
+	// Thru is a STRING, not a number, and modelling it as one is the mistake
+	// this comment exists to prevent: the provider sends "F" for a finished
+	// round and "-" for one not yet started, alongside hole counts like "12".
+	// A MongoInt here does not degrade to zero — it fails the unmarshal, and
+	// because the leaderboard decodes as a single document that one value took
+	// the entire feed down. It is kept as a string for the same reason
+	// scoreToPar is: "F" has no integer spelling. HolesThru is the numeric
+	// form for callers that need one.
+	CurrentRound MongoInt `json:"currentRound"`
+	Thru         string   `json:"thru,omitempty"`
+	// TeeTime is a display string — "1:26pm" — not a timestamp. The machine
+	// readable form is TeeTimeTimestamp, an extended-JSON date.
+	TeeTime          string    `json:"teeTime,omitempty"`
+	TeeTimeTimestamp MongoDate `json:"teeTimeTimestamp,omitempty"`
 }
+
+// HolesThru reports how many holes of the current round the player has
+// completed, and whether the value was numeric.
+//
+// "F" means the round is finished, which is 18 holes on a full round but is
+// reported as complete rather than as a count; "-" means the player has not
+// teed off. Both return ok=false so a caller can tell "no number" from zero.
+func (r Row) HolesThru() (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(r.Thru))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// Finished reports whether the player has completed the current round.
+func (r Row) Finished() bool { return strings.EqualFold(strings.TrimSpace(r.Thru), "F") }
 
 // Round is one round's result for a player.
 type Round struct {

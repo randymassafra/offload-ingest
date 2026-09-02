@@ -85,7 +85,7 @@ func Sports() []Sport {
 
 // Serves reports whether API-Sports covers a pipeline sport at all.
 //
-// Four of the pipeline's sports it does not: cricket, tennis, golf and NASCAR
+// Three of the pipeline's sports it does not: cricket, tennis and golf
 // have no host there under any spelling. They keep their own providers, and
 // this function is how the router knows not to look.
 func Serves(sport Sport) bool {

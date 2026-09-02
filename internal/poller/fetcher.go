@@ -15,7 +15,7 @@ import (
 
 // Fetcher retrieves the next payload for a worker's assigned endpoint. The mock
 // implementation drives generators locally; the HTTP implementation points the
-// same worker pool at a live SportsDataIO endpoint or a recorded fixture server.
+// same worker pool at a live provider endpoint or a recorded fixture server.
 type Fetcher interface {
 	// Fetch returns up to n payloads for the worker's current fixture.
 	Fetch(ctx context.Context, worker int, n int) ([]generators.Message, error)
@@ -79,9 +79,9 @@ func (m *MockFetcher) Close() error { return nil }
 // Feed exposes worker w's feed, for tests.
 func (m *MockFetcher) Feed(worker int) generators.Feed { return m.feeds[worker] }
 
-// HTTPFetcher polls real SportsDataIO endpoints. Supply fully-formed URLs with
+// HTTPFetcher polls real provider endpoints. Supply fully-formed URLs with
 // the route parameters already substituted; the API key travels in the
-// Ocp-Apim-Subscription-Key header, which is how SportsDataIO authenticates.
+// provider's own auth header.
 type HTTPFetcher struct {
 	client    *http.Client
 	endpoints []string
@@ -157,7 +157,7 @@ func (h *HTTPFetcher) Fetch(ctx context.Context, worker, n int) ([]generators.Me
 }
 
 // fixtureFromURL uses the last path segment as the partition key, which for
-// SportsDataIO routes is the game, race or tournament id.
+// provider routes is the game or tournament id.
 func fixtureFromURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {

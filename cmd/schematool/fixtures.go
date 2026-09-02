@@ -38,6 +38,55 @@ func field(name string) func(any) any {
 	}
 }
 
+// mongo collapses MongoDB extended-JSON wrappers before applying inner.
+//
+// live-golf-data serves documents straight out of MongoDB, so an integer
+// arrives as {"$numberInt":"18"} and a date as {"$date":{"$numberLong":"..."}}.
+// The golf provider unwraps both on the way out — deliberately, and documented
+// on golf.MongoInt.MarshalJSON — so comparing our payload against the raw
+// capture reports $numberInt and $date as permanently missing fields.
+//
+// That is a false gap, and a permanent one is worse than none: three feeds
+// stuck at 75% teach a reader to skip the golf rows, which is exactly where a
+// real schema change would then hide. Collapsing the wrappers here compares
+// the capture as we normalise it, so a GAP on golf means what it means
+// everywhere else.
+func mongo(inner func(any) any) func(any) any {
+	var collapse func(any) any
+	collapse = func(v any) any {
+		switch node := v.(type) {
+		case map[string]any:
+			// A wrapper is an object whose only key is an extended-JSON tag.
+			if len(node) == 1 {
+				for _, tag := range []string{"$numberInt", "$numberLong", "$numberDouble", "$date"} {
+					if inner, ok := node[tag]; ok {
+						return collapse(inner)
+					}
+				}
+			}
+			out := make(map[string]any, len(node))
+			for k, child := range node {
+				out[k] = collapse(child)
+			}
+			return out
+		case []any:
+			out := make([]any, len(node))
+			for i, child := range node {
+				out[i] = collapse(child)
+			}
+			return out
+		}
+		return v
+	}
+	return func(doc any) any {
+		doc = collapse(doc)
+		if inner != nil {
+			doc = inner(doc)
+		}
+		return doc
+	}
+}
+
 // elemOf takes the first element of a named array, for feeds that carry one
 // record rather than the whole collection.
 func elemOf(name string) func(any) any {
@@ -148,16 +197,10 @@ var bindings = []binding{
 	{"f1", "boxscore", "apisports/formula-1.json", elemOf("response")},
 	{"f1", "telemetry", "apisports/formula-1.json", nil},
 
-	// SportsDataIO, retained only for the two sports API-Sports cannot serve.
-	{"golf", "boxscore", "sportsdataio/golf/leaderboard.json", firstElem},
-	{"golf", "playerstats", "sportsdataio/golf/leaderboard.json", field("Players")},
-	{"golf", "telemetry", "sportsdataio/golf/leaderboard.json", nested("Players", "Rounds", "Holes")},
-
-	{"nascar", "boxscore", "sportsdataio/nascar/race_result.json", firstElem},
-	{"nascar", "playerstats", "sportsdataio/nascar/race_result.json", field("DriverRaces")},
-	{"nascar", "telemetry", "sportsdataio/nascar/race_result.json", elemOf("DriverRaces")},
-	{"nascar", "reference:schedule", "sportsdataio/nascar/races.json", nil},
-	{"nascar", "reference:drivers", "sportsdataio/nascar/drivers.json", nil},
+	// Golf comes from live-golf-data via RapidAPI. API-Sports has no golf host.
+	{"golf", "boxscore", "golfdata/leaderboard.json", mongo(nil)},
+	{"golf", "playerstats", "golfdata/leaderboard.json", mongo(field("leaderboardRows"))},
+	{"golf", "telemetry", "golfdata/leaderboard.json", mongo(elemOf("leaderboardRows"))},
 
 	// Cricket comes from Cricbuzz, a different provider with a different
 	// shape — the captures sit under their own root.

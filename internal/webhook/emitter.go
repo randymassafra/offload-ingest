@@ -270,7 +270,7 @@ func (e *Emitter) publish(ctx context.Context, id int, msgs []generators.Message
 	e.events.Add(int64(len(msgs)))
 }
 
-// Endpoints lists the SportsDataIO endpoint each burst source is imitating.
+// Endpoints lists the provider endpoint each burst source is imitating.
 func (e *Emitter) Endpoints() []generators.Endpoint {
 	out := make([]generators.Endpoint, 0, len(e.feeds))
 	for _, f := range e.feeds {

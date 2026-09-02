@@ -137,7 +137,7 @@ func goType(sample any, nullable bool) string {
 }
 
 // exported turns a provider's field name into an exported Go identifier.
-// Cricbuzz uses lowercase keys where SportsDataIO uses PascalCase, so this has
+// Cricbuzz uses lowercase keys where other providers use PascalCase, so this has
 // to cope with both without mangling the already-correct ones.
 func exported(key string) string {
 	if key == "" {

@@ -72,7 +72,7 @@ func (d *Discard) projectedPartition(m generators.Message) int {
 
 func (d *Discard) Close() error { return nil }
 
-// Writer publishes newline-delimited SportsDataIO payloads to w. Handy for
+// Writer publishes newline-delimited provider payloads to w. Handy for
 // eyeballing the wire shape before pointing the load test at a real cluster,
 // and for diffing a generated payload against a captured provider response.
 type Writer struct {

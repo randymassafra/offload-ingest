@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/offloadintelligence/offload-ingest/internal/sdio"
 )
 
 // base carries the state every sport simulation needs: the RNG, the identity
@@ -39,7 +37,7 @@ func newBase(rnd *rand.Rand) base {
 	return base{rnd: rnd, season: seasonFor(time.Now())}
 }
 
-// seasonFor picks a plausible SportsDataIO season year for a date.
+// seasonFor picks a plausible season year for a date.
 func seasonFor(t time.Time) int {
 	if t.Month() < time.July {
 		return t.Year()
@@ -100,7 +98,7 @@ func (b *base) remaining() time.Duration {
 }
 
 // remainingParts splits the time left into the minutes/seconds pair the
-// SportsDataIO models carry.
+// the wire models carry.
 func (b *base) remainingParts() (min, sec int) {
 	r := b.remaining()
 	return int(r.Minutes()), int(r.Seconds()) % 60
@@ -113,39 +111,39 @@ func (b *base) clockString() string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
-// status maps the simulation state onto SportsDataIO's Status vocabulary.
+// status maps the simulation state onto the Status vocabulary the feeds use.
 func (b *base) status() string {
 	switch {
 	case b.over:
-		return sdio.StatusFinal
+		return statusFinalText
 	case b.period > 1 || b.elapsed > 0:
-		return sdio.StatusInProgress
+		return statusInProgressText
 	default:
-		return sdio.StatusScheduled
+		return statusScheduledText
 	}
 }
 
 // chance reports true with probability p.
 func (b *base) chance(p float64) bool { return b.rnd.Float64() < p }
 
-// --- SportsDataIO wire formatting ------------------------------------------
+// --- wire formatting -------------------------------------------------------
 
-// sdioDateTime renders a US Eastern timestamp in the API's zone-less format.
-func sdioDateTime(t time.Time) string {
-	return t.In(sdio.Eastern).Format(sdio.DateTimeLayout)
+// easternDateTime renders a US Eastern timestamp in the API's zone-less format.
+func easternDateTime(t time.Time) string {
+	return t.In(easternZone).Format(feedDateTimeLayout)
 }
 
-// sdioDay renders a day in the API's format.
-func sdioDay(t time.Time) string {
-	return t.In(sdio.Eastern).Format(sdio.DateLayout)
+// easternDay renders a day in the API's format.
+func easternDay(t time.Time) string {
+	return t.In(easternZone).Format(feedDateLayout)
 }
 
-// sdioUTC renders a UTC timestamp for the *Utc / *UTC fields.
-func sdioUTC(t time.Time) string {
-	return t.UTC().Format(sdio.DateTimeUTCLayout)
+// utcTimestamp renders a UTC timestamp for the *Utc / *UTC fields.
+func utcTimestamp(t time.Time) string {
+	return t.UTC().Format(feedDateTimeUTCLayout)
 }
 
-// s and i are shorthand for the nullable scalars the SDIO models use
+// s and i are shorthand for the nullable scalars the wire models use
 // everywhere. Passing a value through them documents "present, not null".
 func s(v string) *string   { return &v }
 func i(v int) *int         { return &v }
@@ -249,7 +247,7 @@ func ordinal(n int) string {
 	}
 }
 
-// positionCategory maps a position onto SportsDataIO's OFF/DEF/ST grouping.
+// positionCategory maps a position onto the OFF/DEF/ST grouping.
 func positionCategory(pos string) string {
 	switch pos {
 	case "QB", "RB", "WR", "TE", "OL":
@@ -311,17 +309,6 @@ func maxf(a, b float64) float64 {
 	return b
 }
 
-// dfsSalaries holds the daily-fantasy prices SportsDataIO attaches to a player.
-//
-// It lives here rather than in a sport's file because golf and NASCAR both
-// carry it and they are the only two sports left on that provider.
-type dfsSalaries struct {
-	draftKings   int
-	fanDuel      int
-	fantasyDraft int
-	yahoo        int
-}
-
 // shortName is the display abbreviation a scorecard uses: first initial plus
 // surname, so "Marcus Harper" becomes "M Harper".
 func shortName(name string) string {
@@ -349,3 +336,36 @@ func lastOf(name string) string {
 	}
 	return last
 }
+
+// Date and status conventions, previously imported from internal/sdio.
+//
+// They moved here when that package was deleted with the SportsDataIO
+// retirement. They are kept rather than rewritten because the simulations that
+// use them — tennis via AllScores, cricket via Cricbuzz — were verified against
+// captured responses with these values in place, and changing them now would
+// invalidate that verification for no gain.
+//
+// Worth flagging for whoever touches this next: the zone-less US Eastern layout
+// is a SportsDataIO convention, and neither remaining provider uses it. The
+// schema comparison checks JSON paths rather than value formats, so it would
+// not catch the mismatch. Correcting it per provider is real work with real
+// value; it is simply not part of a vendor retirement.
+const (
+	statusScheduledText  = "Scheduled"
+	statusInProgressText = "InProgress"
+	statusFinalText      = "Final"
+
+	feedDateTimeLayout    = "2006-01-02T15:04:05"
+	feedDateLayout        = "2006-01-02"
+	feedDateTimeUTCLayout = "2006-01-02T15:04:05Z"
+)
+
+// easternZone is US Eastern, with a fixed-offset fallback for a container that
+// ships without a timezone database — which would otherwise silently shift
+// every timestamp by five hours.
+var easternZone = func() *time.Location {
+	if loc, err := time.LoadLocation("America/New_York"); err == nil {
+		return loc
+	}
+	return time.FixedZone("EST", -5*60*60)
+}()

@@ -13,7 +13,7 @@ import (
 // fixtureRoot holds the captured provider responses the provenance check reads.
 // fixtureRoot holds the captured provider responses, one directory per
 // provider. The layout is provider-scoped because the pipeline is not
-// single-vendor: SportsDataIO captures are filed per sport, Cricbuzz's are flat.
+// single-vendor: each provider's captures sit under its own directory.
 const fixtureRoot = "../../fixtures"
 
 // capturedSports reports which sports this repository holds evidence for,
@@ -22,23 +22,12 @@ func capturedSports(t *testing.T) map[Sport]bool {
 	t.Helper()
 	out := map[Sport]bool{}
 
-	// SportsDataIO: fixtures/sportsdataio/<sport>/*.json
-	sdioRoot := filepath.Join(fixtureRoot, string(ProviderSportsDataIO))
-	if entries, err := os.ReadDir(sdioRoot); err == nil {
+	// Golf: live-golf-data, one capture holding the whole document.
+	if entries, err := os.ReadDir(filepath.Join(fixtureRoot, "golfdata")); err == nil {
 		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			sport, err := ParseSport(e.Name())
-			if err != nil {
-				continue
-			}
-			files, _ := os.ReadDir(filepath.Join(sdioRoot, e.Name()))
-			for _, f := range files {
-				if strings.HasSuffix(f.Name(), ".json") {
-					out[sport] = true
-					break
-				}
+			if strings.HasSuffix(e.Name(), ".json") {
+				out[SportGolf] = true
+				break
 			}
 		}
 	}
@@ -299,7 +288,13 @@ func TestPayloadSizesSpanTheRange(t *testing.T) {
 	if smallest > 4000 {
 		t.Errorf("smallest payload is %d B, expected a small record somewhere", smallest)
 	}
-	if largest < 20000 {
+	// The ceiling moved from 20 KB when NASCAR was retired: its race result,
+	// carrying forty driver rows of thirty fields each, was the largest
+	// document the catalog produced. The golf leaderboard is now the biggest at
+	// roughly 19 KB. The point of the assertion is unchanged — one topic has to
+	// carry both a terse status record and a whole leaderboard — only the
+	// number it is calibrated against.
+	if largest < 15000 {
 		t.Errorf("largest payload is %d B, expected a large document somewhere", largest)
 	}
 	t.Logf("payload range: %d B to %d B", smallest, largest)
@@ -538,11 +533,11 @@ func TestParseSportList(t *testing.T) {
 	if err != nil || len(all) != len(AllSports) {
 		t.Fatalf(`ParseSportList("all") = %v, %v`, all, err)
 	}
-	got, err := ParseSportList("nfl, NBA ,nascar,nfl")
+	got, err := ParseSportList("nfl, NBA ,golf,nfl")
 	if err != nil {
 		t.Fatalf("ParseSportList: %v", err)
 	}
-	want := []Sport{SportNFL, SportNBA, SportNASCAR}
+	want := []Sport{SportNFL, SportNBA, SportGolf}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v (duplicates should collapse)", got, want)
 	}
@@ -664,48 +659,64 @@ func TestEveryTickProducesAMessage(t *testing.T) {
 }
 
 // TestNamedEndpointsAreDistinct guards the registry's support for several
-// endpoints of one kind. NASCAR publishes both a season schedule and a driver
-// directory as reference documents; before the registry keyed on name, the
-// second silently shadowed the first and one of the two models was unreachable.
+// endpoints of one kind.
+//
+// Before the registry keyed on name, a second endpoint of the same kind
+// silently shadowed the first and one of the two models became unreachable.
+// The regression was originally caught through NASCAR, which published both a
+// season schedule and a driver directory as reference documents. NASCAR has
+// since been retired and no shipping sport currently registers a named
+// endpoint, so the mechanism is exercised directly here instead — deleting the
+// test along with the sport would have quietly dropped coverage of a real bug
+// while leaving the code that had it in place.
 func TestNamedEndpointsAreDistinct(t *testing.T) {
 	var refs []Endpoint
-	for _, ep := range EndpointsFor(SportNASCAR) {
+	for _, ep := range EndpointsFor(testNamedSport) {
 		if ep.Kind == FeedReference {
 			refs = append(refs, ep)
 		}
 	}
 	if len(refs) < 2 {
-		t.Fatalf("expected at least two NASCAR reference endpoints, got %d", len(refs))
+		t.Fatalf("expected two named reference endpoints, got %d", len(refs))
 	}
 
-	seenPath := map[string]bool{}
+	seenRef := map[string]bool{}
 	for _, ep := range refs {
 		if ep.Name == "" {
-			t.Errorf("%s has no name to disambiguate it", ep)
+			t.Errorf("%s has two reference endpoints but one is unnamed", ep.Sport)
 		}
-		f, err := NewNamed(ep.Sport, ep.Kind, ep.Name, 1)
+		if seenRef[ep.Ref()] {
+			t.Errorf("%s is registered twice; one shadows the other", ep.Ref())
+		}
+		seenRef[ep.Ref()] = true
+
+		// Each must be independently reachable by name.
+		f, err := NewNamed(ep.Sport, ep.Kind, ep.Name, 5)
 		if err != nil {
 			t.Fatalf("NewNamed(%s): %v", ep.Ref(), err)
 		}
-		if got := f.Endpoint().Path; got != ep.Path {
-			t.Errorf("%s resolved to %s", ep.Ref(), got)
+		if got := f.Endpoint().Ref(); got != ep.Ref() {
+			t.Errorf("NewNamed(%s) returned %s; the name did not route", ep.Ref(), got)
 		}
-		if seenPath[ep.Path] {
-			t.Errorf("%s duplicates an earlier endpoint's path", ep.Ref())
-		}
-		seenPath[ep.Path] = true
 	}
 }
 
-// TestNewAllReachesEveryEndpoint is the companion property: building the whole
-// catalog must produce one feed per registered endpoint, not one per kind.
 func TestNewAllReachesEveryEndpoint(t *testing.T) {
 	feeds, err := NewAll(nil, nil, 1)
 	if err != nil {
 		t.Fatalf("NewAll: %v", err)
 	}
-	if len(feeds) != len(Endpoints()) {
-		t.Errorf("NewAll built %d feeds for %d endpoints", len(feeds), len(Endpoints()))
+	// Counted against the endpoints of shipping sports only. Endpoints()
+	// also returns the registry fixture in registry_named_test.go, which is
+	// deliberately absent from AllSports and so is never built by NewAll.
+	var shipping int
+	for _, ep := range Endpoints() {
+		if ep.Sport != testNamedSport {
+			shipping++
+		}
+	}
+	if len(feeds) != shipping {
+		t.Errorf("NewAll built %d feeds for %d endpoints", len(feeds), shipping)
 	}
 	seen := map[string]bool{}
 	for _, f := range feeds {
@@ -746,8 +757,7 @@ func TestSportsAPISportsCannotServeKeepTheirProvider(t *testing.T) {
 	for sport, want := range map[Sport]Provider{
 		SportCricket: ProviderCricbuzz,
 		SportTennis:  ProviderAllScores,
-		SportGolf:    ProviderSportsDataIO,
-		SportNASCAR:  ProviderSportsDataIO,
+		SportGolf:    ProviderLiveGolf,
 	} {
 		eps := EndpointsFor(sport)
 		if len(eps) == 0 {

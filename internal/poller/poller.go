@@ -35,7 +35,7 @@ type Config struct {
 	Jitter   time.Duration
 	// Timeout bounds a single poll (HTTP request or mock fetch).
 	Timeout time.Duration
-	// EventsPerPoll is how many payloads a single poll returns. SportsDataIO
+	// EventsPerPoll is how many payloads a single poll returns. A provider
 	// endpoints return one document per call, so 1 is the faithful setting;
 	// raise it to model a client sweeping several fixtures per tick.
 	EventsPerPoll int

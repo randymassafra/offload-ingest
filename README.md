@@ -48,7 +48,8 @@ config/              environment and .env loading — at the module root, not
 
 internal/dashboard/  the local operator page and its JSON endpoint
 internal/generators/ simulations, including the API-Sports capture replayer
-internal/sdio/       SportsDataIO wire models — golf and NASCAR only now
+internal/provider/    per-provider clients — golf (live-golf-data) and
+                     volleyball (API-Sports)
 internal/allscores/  AllScores wire models — tennis
 internal/cricbuzz/   Cricbuzz wire models — cricket
 internal/poller/     concurrent polling worker pool (simulation)
@@ -71,20 +72,20 @@ match any wire.
 ## Sports and providers
 
 `nfl`, `ncaaf`, `ncaab`, `nba`, `soccer`, `afl`, `rugby`, `cricket`, `tennis`,
-`golf`, `ufc`, `mma`, `nascar`, `f1`.
+`golf`, `ufc`, `mma`, `f1`.
 
 | Provider | Endpoints | Sports |
 | --- | --- | --- |
 | **`apisports`** | 20 | soccer, nfl, ncaaf, ncaab, nba, afl, rugby, ufc, mma, f1 |
-| `sportsdataio` | 8 | golf, nascar |
 | `cricbuzz` | 3 | cricket |
 | `allscores` | 3 | tennis |
+| `livegolf` | 3 | golf |
 
 ### Why four providers and not one
 
 The brief was 100% reliance on API-Sports. It covers ten of the fourteen sports
 and, usefully, **closes the AFL gap** that no previous provider could. But it
-has no host for **cricket, tennis, golf or NASCAR** — verified by probing every
+has no host for **cricket, tennis or golf** — verified by probing every
 plausible hostname, not by reading the documentation:
 
 ```
@@ -96,12 +97,14 @@ v1.cricket.api-sports.io      NO SUCH HOST
 v1.nascar.api-sports.io       NO SUCH HOST
 ```
 
-Consolidating those four onto API-Sports would have meant deleting four working,
-capture-verified sports. They keep their providers; everything API-Sports can
-serve moved to it, and SportsDataIO went from eight sports to two.
+Consolidating those three onto API-Sports would have meant deleting three
+working, capture-verified sports. They keep their providers; everything
+API-Sports can serve moved to it.
 
-Motorsport is now **both**: Formula 1 on API-Sports, NASCAR on SportsDataIO,
-because API-Sports has no NASCAR host and SportsDataIO's F1 routes are all 404.
+Motorsport is **Formula 1 on API-Sports**, and only that. NASCAR was retired
+rather than kept on a fifth vendor: API-Sports sells no NASCAR host at any
+spelling, so carrying it meant carrying SportsDataIO — an entire provider,
+its models and its key — for one sport. The category is served by F1.
 
 ### One API, twelve independently-metered hosts
 
@@ -116,7 +119,7 @@ and the budget allocator all key on the host.
 
 ## Feed kinds
 
-A sport is not one stream. SportsDataIO splits a live event across endpoints
+A sport is not one stream. Providers split a live event across endpoints
 with very different shapes, sizes and update rates, and the pipeline has to
 survive all of them at once:
 
@@ -137,7 +140,7 @@ consumer deserialization budgets and backpressure. `loadtest -endpoints` prints
 the full catalog.
 
 Several feeds carry part of a response rather than a whole one: the per-driver
-timing rows inside a NASCAR race result, the incident arrays inside a soccer box
+the leaderboard rows inside a golf tournament, the incident arrays inside a soccer box
 score. Those are described by an explicit **projection** — a JSON path into the
 response — rather than by inventing a route. `Path` is what a consumer would
 call; `Projection` is what it would then select.
@@ -492,7 +495,7 @@ refuses to save one.
 **Free-plan windows are ±1 day**, and Formula 1 only serves seasons 2022–2024.
 
 Away from API-Sports the conventions differ again, and those differences are
-reproduced too. SportsDataIO uses zone-less US Eastern timestamps
+reproduced too. Several providers use zone-less US Eastern timestamps
 (`2026-08-30T13:05:00`) with `Utc`-suffixed variants carrying the `Z`, and
 nullable scalars are pointers so a real JSON `null` round-trips and "no score
 yet" stays distinguishable from "a score of zero". AllScores omits optional
@@ -519,8 +522,8 @@ OFFLOAD_MODE=simulation          # or production
 OFFLOAD_LICENSE_PATH=license.key
 OFFLOAD_LICENSE_PUBKEY=...       # development; a release build embeds it
 
-SPORTS_DATA_IO_API_KEY=...       # golf and NASCAR only
 RAPIDAPI_KEY=...                 # cricket and tennis
+GOLF_API_KEY=...                 # golf; falls back to RAPIDAPI_KEY
 ```
 
 `OFFLOAD_MODE` defaults to **simulation**: an operator who mis-types it gets a

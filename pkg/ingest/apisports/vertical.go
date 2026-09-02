@@ -18,7 +18,7 @@
 // The vertical table below was probed against the live API on 2026-09-01 with a
 // free key. Every host listed returned HTTP 200 on /status. Four sports this
 // pipeline carries have NO host at api-sports.io under any spelling tried —
-// cricket, tennis, golf and NASCAR — so they keep their own providers; see the
+// cricket, tennis and golf — so they keep their own providers; see the
 // provider map in the README. Motorsport at API-Sports is Formula 1.
 //
 // # Response envelope

@@ -74,20 +74,16 @@ type Config struct {
 	// APISportsKey authenticates all twelve API-Sports hosts. This is the
 	// primary provider and covers ten of the fourteen sports.
 	APISportsKey string
-	// SportsDataIOKey serves golf and NASCAR, the two sports API-Sports has no
-	// host for.
-	SportsDataIOKey string
 	// GolfAPIKey is the credential the golf feed uses.
 	//
 	// It reads GOLF_API_KEY when set and otherwise falls back to RapidAPIKey,
 	// because golf is served by live-golf-data, which is RapidAPI-hosted.
 	//
-	// This fallback was SportsDataIOKey until the live-golf-data provider was
-	// added, and a live run caught it: the golf client sent a SportsDataIO
-	// subscription key to RapidAPI and got HTTP 403. The fallback has to match
-	// whichever vendor actually serves the feed, so it moves when the feed
-	// does. The dedicated name exists so a separately-metered golf
-	// subscription is a configuration change rather than a code one.
+	// The fallback has to match whichever vendor actually serves the feed: it
+	// once pointed at a SportsDataIO key and a live run returned HTTP 403,
+	// because live-golf-data is RapidAPI-hosted. The dedicated name exists so a
+	// separately-metered golf subscription is a configuration change rather
+	// than a code one.
 	GolfAPIKey string
 	// RapidAPIKey authenticates the RapidAPI-fronted providers.
 	RapidAPIKey string
@@ -118,11 +114,10 @@ type Field string
 
 // The fields a caller can require.
 const (
-	RequireAPISports    Field = "APISPORTS_KEY"
-	RequireSportsDataIO Field = "SPORTS_DATA_IO_API_KEY"
-	RequireGolf         Field = "GOLF_API_KEY"
-	RequireRapidAPI     Field = "RAPIDAPI_KEY"
-	RequireLicenseKey   Field = "OFFLOAD_LICENSE_PUBKEY"
+	RequireAPISports  Field = "APISPORTS_KEY"
+	RequireGolf       Field = "GOLF_API_KEY"
+	RequireRapidAPI   Field = "RAPIDAPI_KEY"
+	RequireLicenseKey Field = "OFFLOAD_LICENSE_PUBKEY"
 )
 
 // value returns the loaded value for a field.
@@ -130,8 +125,6 @@ func (c *Config) value(f Field) string {
 	switch f {
 	case RequireAPISports:
 		return c.APISportsKey
-	case RequireSportsDataIO:
-		return c.SportsDataIOKey
 	case RequireGolf:
 		return c.GolfAPIKey
 	case RequireRapidAPI:
@@ -149,8 +142,6 @@ func hint(f Field) string {
 	switch f {
 	case RequireAPISports:
 		return "the primary provider key, from api-sports.io"
-	case RequireSportsDataIO:
-		return "serves golf and NASCAR, from sportsdata.io"
 	case RequireGolf:
 		return "the golf feed's key for live-golf-data; falls back to RAPIDAPI_KEY when unset"
 	case RequireRapidAPI:
@@ -194,10 +185,7 @@ func Load(path string) (*Config, error) {
 		LicensePath:      firstSet("OFFLOAD_LICENSE_PATH"),
 		LicensePublicKey: firstSet("OFFLOAD_LICENSE_PUBKEY"),
 
-		APISportsKey: firstSet("APISPORTS_KEY"),
-		// SPORTS_DATA_IO_API_KEY is the documented name; SPORTSDATAIO_API_KEY
-		// is accepted as an alias so earlier deployments keep working.
-		SportsDataIOKey:       firstSet("SPORTS_DATA_IO_API_KEY", "SPORTSDATAIO_API_KEY"),
+		APISportsKey:          firstSet("APISPORTS_KEY"),
 		RapidAPIKey:           firstSet("RAPIDAPI_KEY"),
 		RapidAPICricketHost:   firstSet("RAPIDAPI_CRICKET_HOST"),
 		RapidAPIAllScoresHost: firstSet("RAPIDAPI_ALLSCORES_HOST"),
@@ -352,7 +340,7 @@ func Redact(secret string) string {
 // Deprecated: use Load.
 func LoadEnv(path string) (string, error) { return loadEnvFile(path) }
 
-// APIKey returns the SportsDataIO subscription key.
+// APIKey returns the primary provider key.
 //
-// Deprecated: use Load and read Config.SportsDataIOKey.
-func APIKey() string { return firstSet("SPORTS_DATA_IO_API_KEY", "SPORTSDATAIO_API_KEY") }
+// Deprecated: use Load and read Config.APISportsKey.
+func APIKey() string { return firstSet("APISPORTS_KEY") }

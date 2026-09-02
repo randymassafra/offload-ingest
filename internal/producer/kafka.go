@@ -286,7 +286,7 @@ func (k *Kafka) Publish(ctx context.Context, msgs ...generators.Message) error {
 
 // headersFor builds the routing headers. Keeping this metadata out of the value
 // is what lets a consumer deserialize the payload with a generated
-// SportsDataIO schema and nothing else.
+// provider's schema and nothing else.
 func headersFor(m generators.Message) []kafka.Header {
 	h := []kafka.Header{
 		{Key: "sport", Value: []byte(m.Sport)},

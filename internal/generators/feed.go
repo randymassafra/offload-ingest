@@ -1,14 +1,15 @@
-// Package generators produces mock SportsDataIO-shaped payloads for every sport
+// Package generators produces provider-shaped payloads for every sport
 // the ingest pipeline carries.
 //
-// The package is deliberately thin: all wire structs live in internal/sdio, and
-// everything here is simulation — advancing a fixture and rendering the SDIO
+// The package is deliberately thin: the wire structs live in a package per
+// provider — internal/allscores, internal/cricbuzz, internal/provider/golf —
+// and everything here is simulation: advancing a fixture and rendering the
 // model that a given endpoint would return at that moment. Swapping in a
-// corrected schema is an edit to internal/sdio alone.
+// corrected schema is an edit to the provider's package alone.
 //
 // # Feed kinds
 //
-// A sport is not one stream. SportsDataIO splits a live event across endpoints
+// A sport is not one stream. Providers split a live event across endpoints
 // with wildly different shapes, sizes and update rates, and the pipeline has to
 // survive all of them at once. The four kinds are modelled separately:
 //
@@ -20,13 +21,13 @@
 //	                Medium size, append-only, strictly ordered per fixture.
 //	FeedPlayerStats An array of per-player stat lines with no game wrapper.
 //	                Wide, flat, numeric — the shape a Flink aggregation joins on.
-//	FeedTelemetry   The high-frequency tail: one NASCAR timing row, one golf
+//	FeedTelemetry   The high-frequency tail: one golf leaderboard row, one
 //	                hole, one tennis point, one cricket delivery. Small, fast,
 //	                bursty. This is what the webhook emitters push.
 //	FeedReference   Schedules and directories. Very large, very slow-moving,
 //	                and not tied to a single fixture.
 //
-// Not every sport offers every kind, which is itself authentic: SportsDataIO
+// Not every sport offers every kind, which is itself authentic: a provider
 // has no soccer play-by-play endpoint and no golf play-by-play at all.
 package generators
 
@@ -54,7 +55,6 @@ const (
 	SportGolf    Sport = "golf"
 	SportUFC     Sport = "ufc"
 	SportMMA     Sport = "mma"
-	SportNASCAR  Sport = "nascar"
 	SportF1      Sport = "f1"
 )
 
@@ -62,7 +62,7 @@ const (
 var AllSports = []Sport{
 	SportNFL, SportNCAAF, SportNCAAB, SportNBA, SportSoccer,
 	SportAFL, SportRugby, SportCricket, SportTennis, SportGolf,
-	SportUFC, SportMMA, SportNASCAR, SportF1,
+	SportUFC, SportMMA, SportF1,
 }
 
 // Valid reports whether s is a known sport.
@@ -104,8 +104,6 @@ func ParseSport(raw string) (Sport, error) {
 		return SportUFC, nil
 	case "mma", "bellator", "pfl":
 		return SportMMA, nil
-	case "nascar", "cup", "cupseries", "motorsport", "motorsports":
-		return SportNASCAR, nil
 	}
 	return "", fmt.Errorf("generators: unknown sport %q", raw)
 }
@@ -159,13 +157,15 @@ func ParseKind(raw string) (FeedKind, error) {
 
 // Provider identifies which upstream API a feed imitates.
 //
-// The pipeline consolidated on API-Sports, which serves ten of the fourteen
-// sports from twelve independently-metered hosts. It does not serve the other
-// four at all: cricket, tennis, golf and NASCAR have no host there under any
-// spelling, verified by probing every plausible name. Those keep the providers
-// that do serve them, so the catalog stays honest about which vendor's schema a
-// topic carries, and the wire models live in a package per provider rather than
-// being forced into one house style.
+// The pipeline is standardised on API-Sports and RapidAPI. API-Sports serves ten
+// of the thirteen sports from twelve independently-metered hosts; the other
+// three — cricket, tennis and golf — have no host there under any spelling,
+// verified by probing every plausible name, and are reached through RapidAPI
+// vendors instead.
+//
+// SportsDataIO, the pipeline's original primary, is gone. It survived on golf
+// and NASCAR alone; golf moved to live-golf-data and NASCAR was retired after
+// API-Sports was confirmed to sell no motorsport product but Formula 1.
 type Provider string
 
 const (
@@ -176,17 +176,16 @@ const (
 	ProviderCricbuzz Provider = "cricbuzz"
 	// ProviderAllScores serves tennis, which API-Sports does not carry.
 	ProviderAllScores Provider = "allscores"
-	// ProviderSportsDataIO is retained ONLY for golf and NASCAR — the two
-	// sports no other provider here serves. It was the pipeline's original
-	// primary and now covers two feeds; everything else moved to API-Sports.
-	ProviderSportsDataIO Provider = "sportsdataio"
+	// ProviderLiveGolf serves golf, via RapidAPI. API-Sports has no golf host,
+	// so this is the one sport reached through a dedicated vendor.
+	ProviderLiveGolf Provider = "livegolf"
 	// ProviderNone marks a feed with no upstream at all.
 	ProviderNone Provider = "none"
 )
 
 // AllProviders lists the upstreams in a stable order, primary first.
 var AllProviders = []Provider{
-	ProviderAPISports, ProviderCricbuzz, ProviderAllScores, ProviderSportsDataIO,
+	ProviderAPISports, ProviderCricbuzz, ProviderAllScores, ProviderLiveGolf,
 }
 
 func (p Provider) String() string { return string(p) }
@@ -207,7 +206,7 @@ type Endpoint struct {
 	Sport Sport    `json:"sport"`
 	Kind  FeedKind `json:"kind"`
 	// Provider is the upstream API this endpoint belongs to. Empty defaults to
-	// SportsDataIO, which is what most of the catalog imitates.
+	// the provider the feed imitates.
 	Provider Provider `json:"provider"`
 	// Name distinguishes endpoints that share a sport and kind — a schedule and
 	// a driver directory are both reference documents, for instance. It is
@@ -228,7 +227,7 @@ type Endpoint struct {
 // This replaced a plain Verified boolean, which conflated three very different
 // claims: "the provider documents this shape", "the provider's spec declares
 // this shape", and "we diffed this shape against bytes the provider actually
-// sent". Only the last is proof, and the captures under fixtures/sportsdataio
+// sent". Only the last is proof, and the captures under fixtures/
 // showed the difference matters — the NCAA data-dictionary pages described
 // 37-49%% of what the API really returns, and the NFL OpenAPI spec declares 14
 // TeamGame columns the live endpoint never sends.
@@ -276,7 +275,7 @@ func (e Endpoint) String() string {
 func (e Endpoint) Whole() bool { return e.Projection == "" }
 
 // Message is one rendered payload plus the routing metadata the producer needs.
-// Payload is an internal/sdio value; it is what gets marshalled as the Kafka
+// Payload is a provider wire model; it is what gets marshalled as the Kafka
 // message body, with no envelope of ours wrapped around it.
 type Message struct {
 	Sport      Sport     `json:"sport"`

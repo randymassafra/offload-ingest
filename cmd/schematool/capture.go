@@ -37,23 +37,20 @@ func runCapture(root string, providers string) error {
 	}
 	if len(want) == 0 || want["all"] {
 		want = map[string]bool{
-			"sportsdataio": true, "cricbuzz": true, "allscores": true,
-			"rugbylive": true, "apisports": true,
+			"cricbuzz": true, "allscores": true,
+			"apisports": true, "golfdata": true,
 		}
 	}
 
 	c := &capturer{root: root, client: &http.Client{Timeout: 60 * time.Second}}
 
-	if want["sportsdataio"] {
-		// Golf and NASCAR are the only sports left on this provider, and the
-		// golf feed takes its credential from the config's golf field, which
-		// resolves a dedicated GOLF_API_KEY when one is provisioned and
-		// otherwise the shared SportsDataIO subscription.
-		if err := cfg.Validate(config.RequireGolf); err != nil {
-			return err
+	// Golf: live-golf-data via RapidAPI. API-Sports has no golf host.
+	if want["golfdata"] && cfg.GolfAPIKey != "" {
+		const host = "live-golf-data.p.rapidapi.com"
+		c.header = map[string]string{
+			"x-rapidapi-key": cfg.GolfAPIKey, "x-rapidapi-host": host,
 		}
-		c.header = map[string]string{"Ocp-Apim-Subscription-Key": cfg.GolfAPIKey}
-		c.captureSportsDataIO()
+		c.captureGolf(host)
 	}
 	// RapidAPI-hosted providers all authenticate identically, so each one is a
 	// host name and a capture function.
@@ -203,108 +200,9 @@ func pickID(doc any, idField, doneField string) (string, bool) {
 	return fallback, fallback != ""
 }
 
-const sdio = "https://api.sportsdata.io"
-
-func (c *capturer) captureSportsDataIO() {
-	fmt.Println("== SportsDataIO ==")
-
-	// The trial key is authorised for 2025 onwards; 2025 is the most recent
-	// season with completed fixtures across every sport.
-	const season, week = "2025", "1"
-
-	// NFL
-	c.save("sportsdataio/nfl/teams.json", sdio+"/v3/nfl/scores/json/Teams")
-	c.save("sportsdataio/nfl/players.json", sdio+"/v3/nfl/scores/json/PlayersByAvailable")
-	scores := c.save("sportsdataio/nfl/scores_by_week.json",
-		sdio+"/v3/nfl/scores/json/ScoresByWeek/"+season+"/"+week)
-	if ht, ok := pickID(scores, "HomeTeam", "IsClosed"); ok {
-		c.save("sportsdataio/nfl/boxscore_v3.json",
-			sdio+"/v3/nfl/stats/json/BoxScoreV3/"+season+"/"+week+"/"+ht)
-		c.save("sportsdataio/nfl/playbyplay.json",
-			sdio+"/v3/nfl/pbp/json/PlayByPlay/"+season+"/"+week+"/"+ht)
-	}
-	c.save("sportsdataio/nfl/player_game_stats.json",
-		sdio+"/v3/nfl/stats/json/PlayerGameStatsByWeek/"+season+"/"+week)
-	c.save("sportsdataio/nfl/team_game_stats.json",
-		sdio+"/v3/nfl/scores/json/TeamGameStats/"+season+"/"+week)
-
-	// NBA
-	const nbaDate = "2026-JAN-15"
-	c.save("sportsdataio/nba/teams.json", sdio+"/v3/nba/scores/json/teams")
-	c.save("sportsdataio/nba/players.json", sdio+"/v3/nba/scores/json/Players")
-	games := c.save("sportsdataio/nba/games_by_date.json",
-		sdio+"/v3/nba/scores/json/GamesByDate/"+nbaDate)
-	if id, ok := pickID(games, "GameID", "Status"); ok {
-		c.save("sportsdataio/nba/boxscore.json", sdio+"/v3/nba/stats/json/BoxScore/"+id)
-		c.save("sportsdataio/nba/playbyplay.json", sdio+"/v3/nba/pbp/json/PlayByPlay/"+id)
-	}
-	c.save("sportsdataio/nba/player_game_stats.json",
-		sdio+"/v3/nba/stats/json/PlayerGameStatsByDate/"+nbaDate)
-	c.save("sportsdataio/nba/team_game_stats.json",
-		sdio+"/v3/nba/scores/json/TeamGameStatsByDate/"+nbaDate)
-
-	// NCAA Football
-	c.save("sportsdataio/ncaaf/teams.json", sdio+"/v3/cfb/scores/json/Teams")
-	c.save("sportsdataio/ncaaf/players.json", sdio+"/v3/cfb/scores/json/Players")
-	cfb := c.save("sportsdataio/ncaaf/games_by_week.json",
-		sdio+"/v3/cfb/scores/json/GamesByWeek/"+season+"/"+week)
-	if id, ok := pickID(cfb, "GameID", "Status"); ok {
-		c.save("sportsdataio/ncaaf/boxscore.json", sdio+"/v3/cfb/stats/json/BoxScore/"+id)
-	}
-	c.save("sportsdataio/ncaaf/player_game_stats.json",
-		sdio+"/v3/cfb/stats/json/PlayerGameStatsByWeek/"+season+"/"+week)
-
-	// NCAA Basketball
-	const cbbDate = "2026-JAN-15"
-	c.save("sportsdataio/ncaab/teams.json", sdio+"/v3/cbb/scores/json/teams")
-	cbb := c.save("sportsdataio/ncaab/games_by_date.json",
-		sdio+"/v3/cbb/scores/json/GamesByDate/"+cbbDate)
-	if id, ok := pickID(cbb, "GameID", "Status"); ok {
-		c.save("sportsdataio/ncaab/boxscore.json", sdio+"/v3/cbb/stats/json/BoxScore/"+id)
-	}
-	c.save("sportsdataio/ncaab/player_game_stats.json",
-		sdio+"/v3/cbb/stats/json/PlayerGameStatsByDate/"+cbbDate)
-
-	// Soccer is no longer a SportsDataIO sport. The trial key licensed exactly
-	// one competition — the UEFA Champions League, id 3 — and every other
-	// competition returned an empty array, so the sport is served by AllScores
-	// instead. See captureAllScores.
-
-	// Golf
-	c.save("sportsdataio/golf/players.json", sdio+"/golf/v2/json/Players")
-	tours := c.save("sportsdataio/golf/tournaments.json", sdio+"/golf/v2/json/Tournaments")
-	if id, ok := pickID(tours, "TournamentID", "IsOver"); ok {
-		c.save("sportsdataio/golf/leaderboard.json", sdio+"/golf/v2/json/Leaderboard/"+id)
-	}
-
-	// MMA / UFC — one API, UFC is a league inside it.
-	c.save("sportsdataio/mma/leagues.json", sdio+"/v3/mma/scores/json/Leagues")
-	c.save("sportsdataio/mma/fighters.json", sdio+"/v3/mma/scores/json/Fighters")
-	sched := c.save("sportsdataio/mma/schedule.json", sdio+"/v3/mma/scores/json/Schedule/UFC/"+season)
-	if id, ok := pickID(sched, "EventId", "Status"); ok {
-		c.save("sportsdataio/mma/event.json", sdio+"/v3/mma/scores/json/Event/"+id)
-	}
-
-	// NASCAR. Both seasons are captured: the models must hold across them, and
-	// a diff of the two is what proves the schema is stable season to season.
-	c.save("sportsdataio/nascar/series.json", sdio+"/nascar/v2/json/series")
-	c.save("sportsdataio/nascar/drivers.json", sdio+"/nascar/v2/json/drivers")
-	for _, s := range []string{"2025", "2026"} {
-		suffix := ""
-		if s != "2025" {
-			suffix = "_" + s
-		}
-		races := c.save("sportsdataio/nascar/races"+suffix+".json", sdio+"/nascar/v2/json/races/"+s)
-		if id, ok := pickID(races, "RaceID", "IsOver"); ok {
-			c.save("sportsdataio/nascar/race_result"+suffix+".json",
-				sdio+"/nascar/v2/json/RaceResult/"+id)
-		}
-	}
-}
-
 // captureCricbuzz refreshes the cricket captures.
 //
-// SportsDataIO does not offer cricket — every route 404s — so this is a second
+// API-Sports has no cricket host, so this is a second
 // provider with an entirely different schema: lowercase keys, a scorecard of
 // innings each carrying batsman, bowler, fall-of-wicket and partnership arrays.
 func (c *capturer) captureCricbuzz(host string) {
@@ -370,7 +268,7 @@ func firstCricbuzzMatchID(doc any) string {
 
 // captureAllScores refreshes the tennis captures.
 //
-// SportsDataIO sells a tennis feed but this key is not scoped to it, so tennis
+// API-Sports has no tennis host, so tennis
 // comes from here instead. The capture walks a date window of matches, prefers
 // a completed singles tie from a major, and follows its id into the match
 // document.
@@ -418,7 +316,7 @@ func (c *capturer) captureAllScores(host string) {
 
 // allScoresEnded reports whether a fixture has been played to a result.
 //
-// AllScores does not use SportsDataIO's "Final": a completed match is "Ended",
+// AllScores does not use "Final": a completed match is "Ended",
 // or one of the variants a knockout tie can end on. Reusing isFinal here made
 // both pickers match nothing, so every capture run stopped at the fixture list
 // and never followed a game into its match document.
@@ -550,4 +448,17 @@ func latestCompletedRugbyMatch(doc any) string {
 		}
 	}
 	return bestID
+}
+
+// captureGolf refreshes the golf capture.
+//
+// One call: the leaderboard is the whole document, and the player rows and
+// round records are projections of it rather than separate endpoints.
+func (c *capturer) captureGolf(host string) {
+	fmt.Println("\n== live-golf-data (RapidAPI) ==")
+	base := "https://" + host
+	// A completed tournament, so the capture carries full four-round scoring
+	// rather than a card of empty rows.
+	c.save("golfdata/leaderboard.json",
+		base+"/leaderboard?orgId=1&tournId=060&year=2026")
 }

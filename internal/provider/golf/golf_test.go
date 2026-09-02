@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -655,5 +656,128 @@ func TestLiveTTLIsHonouredByTheCache(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Errorf("calls = %d, want 2", calls.Load())
+	}
+}
+
+// TestCapturedLeaderboardDecodes runs the real recorded response through the
+// model.
+//
+// This is the test the package was missing, and its absence cost a production
+// outage's worth of feed: thru was modelled as a number, the provider sends
+// "F" for a finished round, and because a leaderboard is decoded as one
+// document that single value failed the whole unmarshal. Every field was
+// individually plausible; only the capture disproved the model.
+//
+// It is deliberately assertion-light. The point is not what the values are —
+// they change every tournament — but that a document the provider actually
+// sent survives the round trip at all.
+func TestCapturedLeaderboardDecodes(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "fixtures", "golfdata", "leaderboard.json"))
+	if err != nil {
+		t.Skipf("no capture to check against: %v", err)
+	}
+
+	var lb Leaderboard
+	if err := json.Unmarshal(raw, &lb); err != nil {
+		t.Fatalf("the captured leaderboard does not decode: %v", err)
+	}
+	if len(lb.Rows) == 0 {
+		t.Fatal("decoded a leaderboard with no rows; the capture is not exercising the model")
+	}
+	if lb.TournID == "" {
+		t.Error("tournId is empty after decoding a real document")
+	}
+	if lb.LastUpdated.IsZero() {
+		t.Error("lastUpdated is zero; the extended-JSON date did not decode")
+	}
+}
+
+// TestCapturedLeaderboardKeepsEveryField re-marshals the capture and reports
+// any field the model silently discarded.
+//
+// Golf is the one provider whose payload is rebuilt from typed structs rather
+// than passed through as bytes, so an unmodelled field does not reach Kafka at
+// all. That is invisible without a check like this one: the feed keeps
+// flowing, just thinner.
+//
+// Extended-JSON wrappers are expected to disappear — unwrapping them is
+// deliberate, documented on MongoInt.MarshalJSON — so they are exempt.
+func TestCapturedLeaderboardKeepsEveryField(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "fixtures", "golfdata", "leaderboard.json"))
+	if err != nil {
+		t.Skipf("no capture to check against: %v", err)
+	}
+
+	var lb Leaderboard
+	if err := json.Unmarshal(raw, &lb); err != nil {
+		t.Fatalf("decoding the capture: %v", err)
+	}
+	out, err := json.Marshal(lb)
+	if err != nil {
+		t.Fatalf("re-marshalling: %v", err)
+	}
+
+	unwrapped := map[string]bool{"$numberInt": true, "$numberLong": true, "$numberDouble": true, "$date": true}
+	for field := range fieldNames(t, raw) {
+		if unwrapped[field] {
+			continue
+		}
+		if !fieldNames(t, out)[field] {
+			t.Errorf("field %q is in the provider's document but not in ours; it will not reach Kafka", field)
+		}
+	}
+}
+
+// fieldNames collects every object key appearing anywhere in a document.
+func fieldNames(t *testing.T, raw []byte) map[string]bool {
+	t.Helper()
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("collecting field names: %v", err)
+	}
+	out := map[string]bool{}
+	var walk func(any)
+	walk = func(v any) {
+		switch node := v.(type) {
+		case map[string]any:
+			for k, child := range node {
+				out[k] = true
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	walk(doc)
+	return out
+}
+
+// TestThruAcceptsTheProvidersVocabulary pins the three forms observed on the
+// wire. "F" is the one that broke the feed.
+func TestThruAcceptsTheProvidersVocabulary(t *testing.T) {
+	for _, tc := range []struct {
+		thru     string
+		holes    int
+		numeric  bool
+		finished bool
+	}{
+		{"F", 0, false, true},
+		{"-", 0, false, false},
+		{"12", 12, true, false},
+		{"", 0, false, false},
+	} {
+		var row Row
+		if err := json.Unmarshal([]byte(`{"thru":`+strconv.Quote(tc.thru)+`}`), &row); err != nil {
+			t.Fatalf("thru %q did not decode: %v", tc.thru, err)
+		}
+		holes, ok := row.HolesThru()
+		if ok != tc.numeric || holes != tc.holes {
+			t.Errorf("thru %q: HolesThru() = %d, %v; want %d, %v", tc.thru, holes, ok, tc.holes, tc.numeric)
+		}
+		if got := row.Finished(); got != tc.finished {
+			t.Errorf("thru %q: Finished() = %v; want %v", tc.thru, got, tc.finished)
+		}
 	}
 }

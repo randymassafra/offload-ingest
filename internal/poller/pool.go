@@ -170,7 +170,7 @@ func (p *Pool) Stats() Stats {
 // Sports returns the sports this pool is polling.
 func (p *Pool) Sports() []generators.Sport { return p.cfg.Sports }
 
-// Endpoints lists the SportsDataIO endpoint each worker is imitating.
+// Endpoints lists the provider endpoint each worker is imitating.
 func (p *Pool) Endpoints() []generators.Endpoint {
 	out := make([]generators.Endpoint, 0, p.cfg.Workers)
 	for w := 0; w < p.cfg.Workers; w++ {

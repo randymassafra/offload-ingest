@@ -192,7 +192,7 @@ func (r *Receiver) message(raw []byte, seq int64) (generators.Message, error) {
 }
 
 // fixtureFrom pulls a partition key out of an inbound document by looking for
-// the identifier fields SportsDataIO uses. Casing varies per API — NFL uses
+// the identifier fields the providers use. Casing varies per API — NFL uses
 // GameID, Soccer v4 uses GameId — so both spellings are checked.
 func fixtureFrom(payload any) string {
 	obj, ok := payload.(map[string]any)

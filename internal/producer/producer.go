@@ -1,6 +1,6 @@
 // Package producer publishes generated payloads to Kafka.
 //
-// The message value is the SportsDataIO payload verbatim — no envelope of ours
+// The message value is the provider's payload verbatim — no envelope of ours
 // wrapped around it. A Flink job reading this topic deserializes exactly the
 // bytes it would deserialize from the real provider. Everything the pipeline
 // needs for routing travels in Kafka headers instead, where it does not
@@ -8,8 +8,8 @@
 //
 //	sport      nfl, epl, f1, ...
 //	feed       boxscore | playbyplay | playerstats | telemetry
-//	endpoint   the SportsDataIO route the payload imitates
-//	model      the SportsDataIO model name, e.g. "BoxScoreV3"
+//	endpoint   the provider route the payload imitates
+//	model      the provider model name, e.g. "Leaderboard"
 //	sequence   monotonic per fixture, for gap detection downstream
 //	verified   "true" unless the schema is modeled rather than observed
 //
