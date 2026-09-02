@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -242,6 +243,27 @@ func (v *Validator) Claims() Claims {
 
 // AllowsSport reports whether the licence entitles a sport.
 func (v *Validator) AllowsSport(sport string) bool { return v.Claims().AllowsSport(sport) }
+
+// ResolvePublicKey decodes a caller-supplied base64 key, falling back to the
+// key this binary was built with.
+//
+// The explicit argument is what lets the config package own every environment
+// read: a caller passes what it loaded, and only an empty value reaches the
+// build-time default.
+func ResolvePublicKey(b64 string) (ed25519.PublicKey, error) {
+	if strings.TrimSpace(b64) == "" {
+		return EmbeddedPublicKey()
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return nil, fmt.Errorf("licensing: public key is not base64: %w", err)
+	}
+	if len(key) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("licensing: public key is %d bytes, want %d",
+			len(key), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(key), nil
+}
 
 // EmbeddedPublicKey returns the verification key this binary was built with.
 //

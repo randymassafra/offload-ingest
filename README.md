@@ -43,6 +43,9 @@ pkg/metrics/         counters, gauges, one-hour series, histograms,
 pkg/dds/             the Dashboard Design System, shared by all four products
   assets/            palette, 12-column grid, card component, logo (go:embed)
 
+config/              environment and .env loading — at the module root, not
+                     under internal/, so other products can import it
+
 internal/dashboard/  the local operator page and its JSON endpoint
 internal/generators/ simulations, including the API-Sports capture replayer
 internal/sdio/       SportsDataIO wire models — golf and NASCAR only now
@@ -507,7 +510,7 @@ carry prediction data if it is ever wanted.
 ## Configuration
 
 Credentials come from the environment. A local `.env` is loaded at startup via
-`godotenv` (`internal/config`), searching the working directory and its parents
+`godotenv` (`config`), searching the working directory and its parents
 so the binary behaves the same from the module root or from `cmd/loadtest`.
 
 ```

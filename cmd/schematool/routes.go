@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/offloadintelligence/offload-ingest/internal/config"
+	"github.com/offloadintelligence/offload-ingest/config"
 	"github.com/offloadintelligence/offload-ingest/internal/generators"
 	"github.com/offloadintelligence/offload-ingest/pkg/ingest/apisports"
 )
@@ -21,12 +20,14 @@ import (
 // recorded in the catalog is wrong — which is exactly what happened: eight
 // endpoints sat at 100% shape coverage while returning 404.
 func runRoutes(fixtureRoot string) error {
-	if _, err := config.LoadEnv(""); err != nil {
+	// One read at startup; every provider below takes its credential from the
+	// struct rather than reaching for the environment itself.
+	cfg, err := config.Load("")
+	if err != nil {
 		return err
 	}
-	key := config.APIKey()
-	if key == "" {
-		return fmt.Errorf("SPORTS_DATA_IO_API_KEY is not set; route validation needs a live key")
+	if err := cfg.Validate(config.RequireGolf); err != nil {
+		return fmt.Errorf("route validation needs a live key:\n%w", err)
 	}
 
 	params, err := buildParams(fixtureRoot)
@@ -56,7 +57,7 @@ func runRoutes(fixtureRoot string) error {
 			continue
 		}
 
-		base, header, ok := upstream(ep, key)
+		base, header, ok := upstream(ep, cfg)
 		if !ok {
 			skipped++
 			fmt.Printf("%-8s %-20s %-10s %-6s no credentials for provider %q\n",
@@ -116,25 +117,30 @@ func runRoutes(fixtureRoot string) error {
 // upstream maps a provider onto its base URL and auth headers. Adding a
 // provider is a matter of extending this switch: everything else in the tool
 // works off the endpoint's Provider field.
-func upstream(ep generators.Endpoint, sdioKey string) (string, map[string]string, bool) {
+func upstream(ep generators.Endpoint, cfg *config.Config) (string, map[string]string, bool) {
 	switch ep.Provider {
 	case generators.ProviderSportsDataIO:
-		if sdioKey == "" {
+		// Golf and NASCAR. Golf takes the golf-specific credential, which
+		// resolves to the shared SportsDataIO key until one is provisioned.
+		key := cfg.SportsDataIOKey
+		if ep.Sport == "golf" {
+			key = cfg.GolfAPIKey
+		}
+		if key == "" {
 			return "", nil, false
 		}
 		return "https://api.sportsdata.io",
-			map[string]string{"Ocp-Apim-Subscription-Key": sdioKey}, true
+			map[string]string{"Ocp-Apim-Subscription-Key": key}, true
 	case generators.ProviderCricbuzz:
-		return rapidAPI(os.Getenv("RAPIDAPI_CRICKET_HOST"))
+		return rapidAPI(cfg.RapidAPIKey, cfg.RapidAPICricketHost)
 	case generators.ProviderAllScores:
-		return rapidAPI(os.Getenv("RAPIDAPI_ALLSCORES_HOST"))
+		return rapidAPI(cfg.RapidAPIKey, cfg.RapidAPIAllScoresHost)
 	case generators.ProviderAPISports:
 		// The primary provider is twelve hosts, not one, each independently
 		// metered. The host is resolved from the SPORT rather than the path,
 		// because several sports share a path (/games) on different hosts and
 		// two share a host (NFL and NCAAF) on the same path.
-		key := os.Getenv("APISPORTS_KEY")
-		if key == "" {
+		if cfg.APISportsKey == "" {
 			return "", nil, false
 		}
 		v, err := apisports.ParseVertical(string(ep.Sport))
@@ -145,7 +151,7 @@ func upstream(ep generators.Endpoint, sdioKey string) (string, map[string]string
 		if !ok {
 			return "", nil, false
 		}
-		return spec.BaseURL(), map[string]string{"x-apisports-key": key}, true
+		return spec.BaseURL(), map[string]string{"x-apisports-key": cfg.APISportsKey}, true
 	default:
 		// ProviderNone: the sport has no upstream, so there is no route to call.
 		return "", nil, false
@@ -154,8 +160,7 @@ func upstream(ep generators.Endpoint, sdioKey string) (string, map[string]string
 
 // rapidAPI builds the base URL and headers for any RapidAPI-hosted provider.
 // They all authenticate the same way, so onboarding another is a host name.
-func rapidAPI(host string) (string, map[string]string, bool) {
-	key := os.Getenv("RAPIDAPI_KEY")
+func rapidAPI(key, host string) (string, map[string]string, bool) {
 	if key == "" || host == "" {
 		return "", nil, false
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -48,6 +47,9 @@ type RuntimeConfig struct {
 	APIKey string
 	// LicensePath overrides the licence location.
 	LicensePath string
+	// LicensePublicKey is the base64 Ed25519 verification key. Empty falls
+	// back to the key embedded at build time.
+	LicensePublicKey string
 	// Sports and Kinds bound simulation mode. Production takes its sports from
 	// the licence, never from a flag.
 	Sports []generators.Sport
@@ -77,16 +79,20 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.Mode == "" {
-		cfg.Mode = os.Getenv("OFFLOAD_MODE")
-	}
+	// Mode is supplied by the caller, which read it from config. Defaulting to
+	// simulation here rather than reaching for the environment keeps this
+	// package free of process-global state — see the config package doc.
 	mode, err := ParseMode(cfg.Mode)
 	if err != nil {
 		return nil, err
 	}
 
+	pub, err := licensing.ResolvePublicKey(cfg.LicensePublicKey)
+	if err != nil {
+		return nil, err
+	}
 	validator, err := licensing.New(licensing.Config{
-		Path: cfg.LicensePath, Logger: cfg.Logger,
+		Path: cfg.LicensePath, PublicKey: pub, Logger: cfg.Logger,
 		Now: cfg.Now, Shutdown: cfg.Shutdown,
 	})
 	if err != nil {
@@ -132,13 +138,12 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	}
 
 	// Production.
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return nil, fmt.Errorf(
+			"ingest: production mode needs an API-Sports key; " +
+				"pass RuntimeConfig.APIKey from config.Load")
+	}
 	key := cfg.APIKey
-	if key == "" {
-		key = os.Getenv("APISPORTS_KEY")
-	}
-	if strings.TrimSpace(key) == "" {
-		return nil, fmt.Errorf("ingest: production mode needs APISPORTS_KEY")
-	}
 
 	bindings := apisports.Entitled(claims.Sports, claims.Regions)
 	if len(bindings) == 0 {

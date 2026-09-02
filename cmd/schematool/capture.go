@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/offloadintelligence/offload-ingest/internal/config"
+	"github.com/offloadintelligence/offload-ingest/config"
 )
 
 // runCapture refreshes the provider responses under the fixtures root.
@@ -22,7 +22,10 @@ import (
 // picks a completed fixture out of it, and follows that id into the box score,
 // so a refresh does not depend on hand-maintained game ids going stale.
 func runCapture(root string, providers string) error {
-	if _, err := config.LoadEnv(""); err != nil {
+	// Every credential this run might use, read once. Nothing below reaches
+	// for os.Getenv on its own.
+	cfg, err := config.Load("")
+	if err != nil {
 		return err
 	}
 
@@ -42,11 +45,14 @@ func runCapture(root string, providers string) error {
 	c := &capturer{root: root, client: &http.Client{Timeout: 60 * time.Second}}
 
 	if want["sportsdataio"] {
-		key := config.APIKey()
-		if key == "" {
-			return fmt.Errorf("SPORTS_DATA_IO_API_KEY is not set")
+		// Golf and NASCAR are the only sports left on this provider, and the
+		// golf feed takes its credential from the config's golf field, which
+		// resolves a dedicated GOLF_API_KEY when one is provisioned and
+		// otherwise the shared SportsDataIO subscription.
+		if err := cfg.Validate(config.RequireGolf); err != nil {
+			return err
 		}
-		c.header = map[string]string{"Ocp-Apim-Subscription-Key": key}
+		c.header = map[string]string{"Ocp-Apim-Subscription-Key": cfg.GolfAPIKey}
 		c.captureSportsDataIO()
 	}
 	// RapidAPI-hosted providers all authenticate identically, so each one is a
@@ -54,34 +60,32 @@ func runCapture(root string, providers string) error {
 	for _, p := range []struct {
 		name    string
 		hostEnv string
+		host    string
 		fn      func(string)
 	}{
-		{"cricbuzz", "RAPIDAPI_CRICKET_HOST", c.captureCricbuzz},
-		{"allscores", "RAPIDAPI_ALLSCORES_HOST", c.captureAllScores},
-		{"rugbylive", "RAPIDAPI_RUGBY_HOST", c.captureRugbyLive},
+		{"cricbuzz", "RAPIDAPI_CRICKET_HOST", cfg.RapidAPICricketHost, c.captureCricbuzz},
+		{"allscores", "RAPIDAPI_ALLSCORES_HOST", cfg.RapidAPIAllScoresHost, c.captureAllScores},
 	} {
 		if !want[p.name] {
 			continue
 		}
-		key, host := os.Getenv("RAPIDAPI_KEY"), os.Getenv(p.hostEnv)
-		if key == "" || host == "" {
+		if cfg.RapidAPIKey == "" || p.host == "" {
 			fmt.Fprintf(os.Stderr, "skipping %s: RAPIDAPI_KEY / %s not set\n", p.name, p.hostEnv)
 			continue
 		}
 		c.header = map[string]string{
-			"x-rapidapi-key":  key,
-			"x-rapidapi-host": host,
+			"x-rapidapi-key":  cfg.RapidAPIKey,
+			"x-rapidapi-host": p.host,
 			"Content-Type":    "application/json",
 		}
-		p.fn(host)
+		p.fn(p.host)
 	}
 
 	if want["apisports"] {
-		key := os.Getenv("APISPORTS_KEY")
-		if key == "" {
+		if cfg.APISportsKey == "" {
 			fmt.Fprintln(os.Stderr, "skipping apisports: APISPORTS_KEY not set")
 		} else {
-			c.header = map[string]string{"x-apisports-key": key}
+			c.header = map[string]string{"x-apisports-key": cfg.APISportsKey}
 			c.captureAPISports()
 		}
 	}

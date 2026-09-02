@@ -21,7 +21,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/offloadintelligence/offload-ingest/internal/config"
+	"github.com/offloadintelligence/offload-ingest/config"
 	"github.com/offloadintelligence/offload-ingest/internal/generators"
 	"github.com/offloadintelligence/offload-ingest/internal/poller"
 	"github.com/offloadintelligence/offload-ingest/internal/producer"
@@ -103,11 +103,11 @@ func main() {
 }
 
 func run() error {
-	// The .env file is loaded before flags are parsed so that environment
-	// defaults are visible to flag defaulting, and before anything reads a
+	// Configuration is read once, before flags are parsed, so that environment
+	// defaults are visible to flag defaulting and before anything reads a
 	// credential. Real environment variables always win over the file.
-	envPath, envErr := config.LoadEnv(preflightEnvFile())
-	opts := parseFlags()
+	cfg, envErr := config.Load(preflightEnvFile())
+	opts := parseFlags(cfg)
 	if opts.showVersion {
 		fmt.Printf("loadtest %s (commit %s, built %s)\n", version, commit, date)
 		return nil
@@ -132,15 +132,21 @@ func run() error {
 	if envErr != nil {
 		return envErr
 	}
-	if envPath != "" {
-		// The path is logged, never the contents: this file holds a live key.
-		log.Debug("loaded environment file", "path", envPath)
+	if cfg.Source != "" {
+		// The path is logged, never the contents: this file holds live keys.
+		log.Debug("loaded environment file", "path", cfg.Source)
 	}
-	if key := config.APIKey(); key != "" {
-		log.Debug("sportsdata.io credential available", "key", config.Redact(key))
-	}
-	if key := os.Getenv("APISPORTS_KEY"); key != "" {
-		log.Debug("api-sports credential available", "key", config.Redact(key))
+	// Redacted, always: enough to tell which credential is loaded, never
+	// enough to use it.
+	for name, key := range map[string]string{
+		"api-sports":    cfg.APISportsKey,
+		"sportsdata.io": cfg.SportsDataIOKey,
+		"golf":          cfg.GolfAPIKey,
+		"rapidapi":      cfg.RapidAPIKey,
+	} {
+		if key != "" {
+			log.Debug("credential available", "provider", name, "key", config.Redact(key))
+		}
 	}
 
 	sports, err := generators.ParseSportList(opts.sports)
@@ -170,9 +176,20 @@ func run() error {
 	// exercise the generators, but that flag can never reach production — the
 	// licence is what carries the tier, and without a tier there is no budget
 	// to rate-limit against.
+	if opts.mode == "" {
+		opts.mode = cfg.Mode
+	}
 	mode, err := ingest.ParseMode(opts.mode)
 	if err != nil {
 		return err
+	}
+	// Required only where it is actually needed. Simulation contacts no
+	// provider and must keep running with no credentials at all — that is what
+	// makes round-the-clock load testing possible on a metered plan.
+	if mode == ingest.ModeProduction {
+		if err := cfg.Validate(config.RequireAPISports); err != nil {
+			return err
+		}
 	}
 	if opts.noLicense && mode == ingest.ModeProduction {
 		return errors.New("-no-license cannot be used in production mode: " +
@@ -191,15 +208,17 @@ func run() error {
 	var runtime *ingest.Runtime
 	if !opts.noLicense {
 		runtime, err = ingest.NewRuntime(ingest.RuntimeConfig{
-			Mode:        string(mode),
-			LicensePath: opts.licensePath,
-			Sports:      sports,
-			Kinds:       pollKinds,
-			Seed:        opts.seed,
-			Batch:       opts.eventsPerPoll,
-			FlinkAddr:   opts.flinkAddr,
-			FlinkTTL:    opts.flinkTTL,
-			Logger:      log,
+			Mode:             string(mode),
+			APIKey:           cfg.APISportsKey,
+			LicensePublicKey: cfg.LicensePublicKey,
+			LicensePath:      firstNonEmpty(opts.licensePath, cfg.LicensePath),
+			Sports:           sports,
+			Kinds:            pollKinds,
+			Seed:             opts.seed,
+			Batch:            opts.eventsPerPoll,
+			FlinkAddr:        firstNonEmpty(opts.flinkAddr, cfg.FlinkAddr),
+			FlinkTTL:         opts.flinkTTL,
+			Logger:           log,
 		})
 		if err != nil {
 			return err
@@ -332,7 +351,9 @@ func preflightEnvFile() string {
 	return ""
 }
 
-func parseFlags() *options {
+// parseFlags parses the command line, using cfg for any value the environment
+// supplies. Flags win: an operator who typed it means it.
+func parseFlags(cfg *config.Config) *options {
 	o := &options{}
 	kdef := producer.DefaultConfig()
 	pdef := poller.DefaultConfig()
@@ -378,12 +399,12 @@ func parseFlags() *options {
 
 	flag.StringVar(&o.mode, "mode", "", "simulation or production; defaults to OFFLOAD_MODE, then simulation")
 	flag.StringVar(&o.licensePath, "license", "", "licence file; defaults to OFFLOAD_LICENSE_PATH, then license.key")
-	flag.StringVar(&o.dashboardAddr, "dashboard-addr", "", "listen address for the local dashboard, e.g. :8090")
+	flag.StringVar(&o.dashboardAddr, "dashboard-addr", cfg.DashboardAddr, "listen address for the local dashboard, e.g. :8090")
 	// 9102, not 9090: 9090 is Prometheus server's own default port, and an
 	// appliance that also runs Prometheus locally would have the two fight over
 	// the bind. 9100 is node_exporter's, so the next free slot in the exporter
 	// range is used.
-	flag.StringVar(&o.metricsAddr, "metrics-addr", "", "listen address for the Prometheus /metrics endpoint, e.g. :9102")
+	flag.StringVar(&o.metricsAddr, "metrics-addr", cfg.MetricsAddr, "listen address for the Prometheus /metrics endpoint, e.g. :9102")
 	flag.StringVar(&o.flinkAddr, "flink-addr", "", "optional Flink JobManager REST endpoint to scrape state size from, e.g. http://flink:8081")
 	flag.DurationVar(&o.flinkTTL, "flink-ttl", 10*time.Hour, "configured Flink state retention, used to scale the state gauge")
 	flag.BoolVar(&o.noLicense, "no-license", false, "run the generators without a licence (simulation only; refuses production)")
@@ -406,13 +427,13 @@ func parseFlags() *options {
 	}
 	flag.Parse()
 
-	if env := os.Getenv("KAFKA_SASL_PASSWORD"); env != "" {
+	if env := cfg.KafkaSASLPassword; env != "" {
 		o.saslPassword = env
 	}
 	if o.apiKey == "" {
-		o.apiKey = config.APIKey()
+		o.apiKey = cfg.SportsDataIOKey
 	}
-	if env := os.Getenv("KAFKA_BROKERS"); env != "" && !flagPassed("brokers") {
+	if env := cfg.KafkaBrokers; env != "" && !flagPassed("brokers") {
 		o.brokers = env
 	}
 	return o
@@ -664,4 +685,18 @@ func printEndpoints() {
 		fmt.Println("\nMODELED feeds follow SportsDataIO conventions but describe no verified")
 		fmt.Println("endpoint. See the provenance headers in internal/sdio before trusting them.")
 	}
+}
+
+// firstNonEmpty returns the first non-empty value.
+//
+// The precedence it encodes is flag over environment: an operator who passes
+// -license on the command line means it, and a value inherited from a .env
+// should never silently win over one they typed.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
