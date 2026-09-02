@@ -3,8 +3,12 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	golfprovider "github.com/offloadintelligence/offload-ingest/internal/provider/golf"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
@@ -332,5 +336,146 @@ func TestFanInStopsItsGoroutinesOnClose(t *testing.T) {
 func TestFanInWithNoSourcesIsAnError(t *testing.T) {
 	if _, err := NewMultiStreamer(quiet()).Next(context.Background()); err == nil {
 		t.Error("want an error with no sources configured")
+	}
+}
+
+// --- golf cadence -------------------------------------------------------------
+
+// TestCadenceFollowsTournamentState pins the three-state ladder.
+func TestCadenceFollowsTournamentState(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		inProgress bool
+		round      int
+		wantMode   string
+		wantTTL    time.Duration
+	}{
+		{"final round", true, 4, "final-round", golfprovider.FinalRoundCacheTTL},
+		{"fifth round playoff", true, 5, "final-round", golfprovider.FinalRoundCacheTTL},
+		{"second round", true, 2, "live", golfprovider.LiveCacheTTL},
+		{"first round", true, 1, "live", golfprovider.LiveCacheTTL},
+		{"completed", false, 4, "static", golfprovider.CacheTTL},
+		{"not started", false, 0, "static", golfprovider.CacheTTL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cadenceFor(tc.inProgress, tc.round)
+			if got.Mode != tc.wantMode {
+				t.Errorf("mode = %q, want %q", got.Mode, tc.wantMode)
+			}
+			if got.TTL != tc.wantTTL {
+				t.Errorf("TTL = %s, want %s", got.TTL, tc.wantTTL)
+			}
+			// The poll interval must sit just under the cache lifetime, or the
+			// loop either spins on an unexpired cache or lets it go stale.
+			if got.Interval >= got.TTL {
+				t.Errorf("interval %s is not shorter than the TTL %s", got.Interval, got.TTL)
+			}
+			if got.Reason == "" {
+				t.Error("a cadence must explain itself for the switch log")
+			}
+		})
+	}
+}
+
+// TestFinalRoundIsFasterThanLiveIsFasterThanStatic — the ordering is the whole
+// point of the feature.
+func TestCadenceOrdering(t *testing.T) {
+	final := cadenceFor(true, 4)
+	live := cadenceFor(true, 2)
+	static := cadenceFor(false, 0)
+	if !(final.Interval < live.Interval && live.Interval < static.Interval) {
+		t.Errorf("intervals out of order: final=%s live=%s static=%s",
+			final.Interval, live.Interval, static.Interval)
+	}
+}
+
+// TestThrottleOverridesTheCadence is the guardrail seen from the streamer's
+// side: however live the tournament, a throttled provider must be polled at the
+// resting rate or the loop spins against a cache that is not expiring.
+func TestThrottleOverridesTheCadence(t *testing.T) {
+	clock := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := golfprovider.New("k").Configure(
+		golfprovider.WithBaseURL(srv.URL),
+		golfprovider.WithCachePath(filepath.Join(t.TempDir(), "c.json")),
+		golfprovider.WithClock(func() time.Time { return clock }),
+	)
+	reg := metrics.NewRegistry(func() time.Time { return clock })
+	g, err := NewGolfStreamer(GolfConfig{
+		Client: client, Registry: reg, Logger: quiet(),
+		Now: func() time.Time { return clock }, TournID: "033", Year: "2023",
+	})
+	if err != nil {
+		t.Fatalf("NewGolfStreamer: %v", err)
+	}
+
+	// Trip the floor.
+	client.Leaderboard(context.Background(), golfprovider.LeaderboardRequest{
+		OrgID: "1", TournID: "033", Year: "2023",
+	})
+	if throttled, _ := client.Throttled(); !throttled {
+		t.Fatal("the floor did not engage")
+	}
+
+	// Even mid-final-round, the cadence must be the resting one.
+	g.applyCadence(&golfprovider.Leaderboard{RoundID: 4})
+	got := g.Cadence()
+	if got.Mode != "throttled" {
+		t.Errorf("mode = %q, want throttled", got.Mode)
+	}
+	if got.Interval != GolfPollInterval {
+		t.Errorf("interval = %s, want the resting %s", got.Interval, GolfPollInterval)
+	}
+	if !reg.Golf.Throttled.Value() {
+		t.Error("the throttled flag was not reported to metrics")
+	}
+	if got := reg.Golf.CadenceMinutes.Value(); got != GolfPollInterval.Minutes() {
+		t.Errorf("cadence gauge = %v, want %v", got, GolfPollInterval.Minutes())
+	}
+}
+
+// TestCadenceGaugeTracksTheMode, so the dashboard shows the real polling rate.
+func TestCadenceGaugeTracksTheMode(t *testing.T) {
+	clock := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	reg := metrics.NewRegistry(func() time.Time { return clock })
+	client := golfprovider.New("k").Configure(
+		golfprovider.WithCachePath(filepath.Join(t.TempDir(), "c.json")),
+		golfprovider.WithClock(func() time.Time { return clock }),
+	)
+	g, _ := NewGolfStreamer(GolfConfig{
+		Client: client, Registry: reg, Logger: quiet(),
+		Now: func() time.Time { return clock }, TournID: "033", Year: "2023",
+	})
+
+	// Not in progress: resting.
+	g.applyCadence(&golfprovider.Leaderboard{RoundID: 4})
+	if got := reg.Golf.CadenceMinutes.Value(); got != GolfPollInterval.Minutes() {
+		t.Errorf("static gauge = %v, want %v", got, GolfPollInterval.Minutes())
+	}
+	if client.EffectiveTTL() != golfprovider.CacheTTL {
+		t.Errorf("provider TTL = %s, want the resting %s", client.EffectiveTTL(), golfprovider.CacheTTL)
+	}
+
+	// Put the tournament in progress and re-evaluate.
+	var e golfprovider.ScheduleEntry
+	e.Date.Start = golfprovider.MongoDate{Time: clock.Add(-48 * time.Hour)}
+	e.Date.End = golfprovider.MongoDate{Time: clock.Add(24 * time.Hour)}
+	g.mu.Lock()
+	g.entry = e
+	g.mu.Unlock()
+
+	g.applyCadence(&golfprovider.Leaderboard{RoundID: 4})
+	if g.Cadence().Mode != "final-round" {
+		t.Fatalf("mode = %q, want final-round", g.Cadence().Mode)
+	}
+	if client.EffectiveTTL() != golfprovider.FinalRoundCacheTTL {
+		t.Errorf("provider TTL = %s, want %s", client.EffectiveTTL(), golfprovider.FinalRoundCacheTTL)
+	}
+	if got := reg.Golf.CadenceMinutes.Value(); got >= GolfPollInterval.Minutes() {
+		t.Errorf("gauge = %v, should have dropped below the resting rate", got)
 	}
 }

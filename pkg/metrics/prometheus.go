@@ -159,6 +159,19 @@ func (r *Registry) WritePrometheus(w io.Writer, product string) error {
 		r.Host.ProcessRSS.Value(), nil)
 	e.gauge("process_goroutines", "Goroutines currently running.", r.Host.Goroutines.Value(), nil)
 
+	// --- golf ---------------------------------------------------------------
+	//
+	// Exported only once the feed has set a cadence, so a deployment that does
+	// not run golf produces no series rather than a misleading zero.
+	if r.Golf.CadenceMinutes.Value() > 0 {
+		e.gauge("golf_cadence_minutes",
+			"Minutes between golf leaderboard polls. Falls with tournament activity and is forced back to the resting rate by a 429.",
+			r.Golf.CadenceMinutes.Value(), nil)
+		e.gauge("golf_throttled",
+			"1 while the RapidAPI 429 hard floor is holding the golf cadence at its resting rate.",
+			boolValue(r.Golf.Throttled.Value()), nil)
+	}
+
 	// --- flink --------------------------------------------------------------
 	// Exported only when configured. A gauge that is always zero because
 	// nothing is being scraped is worse than an absent one: it graphs as a

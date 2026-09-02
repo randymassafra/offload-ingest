@@ -26,8 +26,31 @@ const Host = "live-golf-data.p.rapidapi.com"
 // cache.
 const Timeout = 5 * time.Second
 
-// CacheTTL is how long a cached leaderboard stays usable.
-const CacheTTL = time.Hour
+// Cache lifetimes, by what the tournament is doing.
+//
+// A leaderboard that is not being played does not change, so re-reading it more
+// than hourly spends a request to receive identical bytes. A leaderboard on
+// Sunday afternoon changes every few minutes, and an hour-old one on a screen
+// behind a bar is worse than useless — it is confidently wrong.
+const (
+	// CacheTTL is the resting lifetime: completed, scheduled, or between
+	// tournaments.
+	CacheTTL = time.Hour
+	// LiveCacheTTL applies while a tournament is in progress.
+	LiveCacheTTL = 5 * time.Minute
+	// FinalRoundCacheTTL applies during the final round, where positions move
+	// fastest and the audience is largest.
+	FinalRoundCacheTTL = time.Minute
+)
+
+// ThrottlePenalty is how long a 429 forces the resting lifetime back on.
+//
+// Twenty-four hours, and deliberately blunt. RapidAPI bans accounts that keep
+// hammering a throttled endpoint, and losing the subscription costs far more
+// than a day of hourly golf. The penalty is a circuit breaker, not a back-off:
+// a back-off would resume fast polling as soon as the window cleared, which is
+// exactly the behaviour that gets an account suspended.
+const ThrottlePenalty = 24 * time.Hour
 
 // DefaultCachePath is where the leaderboard cache lives.
 //
@@ -52,6 +75,13 @@ type Client struct {
 	// mu guards the cache file against two concurrent refreshes writing over
 	// each other. The provider is safe for concurrent use.
 	mu sync.Mutex
+
+	// stateMu guards the cadence state. Separate from mu because mu is held
+	// across the whole of Leaderboard, including the fetch that records a
+	// throttle — reusing it would deadlock on the same goroutine.
+	stateMu sync.RWMutex
+	// throttledUntil is when the hard floor lifts. Zero when not throttled.
+	throttledUntil time.Time
 }
 
 // New builds a golf client.
@@ -83,6 +113,58 @@ func WithCachePath(path string) Option { return func(c *Client) { c.cachePath = 
 
 // WithCacheTTL changes how long a cached document stays usable.
 func WithCacheTTL(d time.Duration) Option { return func(c *Client) { c.ttl = d } }
+
+// SetCacheTTL changes the requested cache lifetime at runtime.
+//
+// The request is honoured only while the provider is not throttled; see
+// EffectiveTTL. Safe to call from another goroutine.
+func (c *Client) SetCacheTTL(d time.Duration) {
+	if d <= 0 {
+		d = CacheTTL
+	}
+	c.stateMu.Lock()
+	c.ttl = d
+	c.stateMu.Unlock()
+}
+
+// EffectiveTTL is the lifetime actually in force.
+//
+// This is the hard floor. While a 429 penalty is active the resting lifetime is
+// returned however short a TTL was requested, so a caller cannot re-enter fast
+// polling against an endpoint that has already refused us.
+func (c *Client) EffectiveTTL() time.Duration {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.effectiveTTLLocked()
+}
+
+func (c *Client) effectiveTTLLocked() time.Duration {
+	if !c.throttledUntil.IsZero() && c.now().Before(c.throttledUntil) {
+		return CacheTTL
+	}
+	if c.ttl <= 0 {
+		return CacheTTL
+	}
+	return c.ttl
+}
+
+// Throttled reports whether the hard floor is in force, and until when.
+func (c *Client) Throttled() (bool, time.Time) {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	if c.throttledUntil.IsZero() || !c.now().Before(c.throttledUntil) {
+		return false, time.Time{}
+	}
+	return true, c.throttledUntil
+}
+
+// recordThrottle engages the hard floor, returning when it lifts.
+func (c *Client) recordThrottle() (bool, time.Time) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.throttledUntil = c.now().Add(ThrottlePenalty)
+	return true, c.throttledUntil
+}
 
 // WithHTTPClient replaces the transport.
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
@@ -175,8 +257,9 @@ func (c *Client) Leaderboard(ctx context.Context, req LeaderboardRequest) (*Lead
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	ttl := c.EffectiveTTL()
 	cached, cacheErr := c.readCache(key)
-	if cacheErr == nil && c.now().Sub(cached.FetchedAt) < c.ttl {
+	if cacheErr == nil && c.now().Sub(cached.FetchedAt) < ttl {
 		lb, err := decodeLeaderboard(cached.Document)
 		if err == nil {
 			return lb, Meta{
@@ -356,7 +439,13 @@ func (c *Client) fetch(ctx context.Context, path string, params url.Values) (jso
 	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return nil, fmt.Errorf("golf: %s: rate limited by RapidAPI (429)", path)
+		// The hard floor. Forcing the resting lifetime back on for a full day
+		// protects the subscription: RapidAPI suspends accounts that keep
+		// hammering a throttled endpoint.
+		_, until := c.recordThrottle()
+		return nil, fmt.Errorf(
+			"golf: %s: rate limited by RapidAPI (429); cache lifetime forced to %s until %s",
+			path, CacheTTL, until.Format(time.RFC3339))
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		return nil, fmt.Errorf("golf: %s: credential rejected (HTTP %d)", path, resp.StatusCode)
 	case resp.StatusCode != http.StatusOK:

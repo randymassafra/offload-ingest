@@ -536,3 +536,124 @@ func TestEntryWithNoDatesIsNeverSelected(t *testing.T) {
 		t.Error("an entry with no dates should be neither in progress nor completed")
 	}
 }
+
+// --- dynamic cadence and the hard floor ---------------------------------------
+
+// TestEffectiveTTLFollowsTheRequest.
+func TestEffectiveTTLFollowsTheRequest(t *testing.T) {
+	c := New("k")
+	if got := c.EffectiveTTL(); got != CacheTTL {
+		t.Errorf("default TTL = %s, want %s", got, CacheTTL)
+	}
+	c.SetCacheTTL(LiveCacheTTL)
+	if got := c.EffectiveTTL(); got != LiveCacheTTL {
+		t.Errorf("TTL = %s, want %s", got, LiveCacheTTL)
+	}
+	// A nonsensical value falls back to the resting lifetime rather than
+	// producing an every-request cache.
+	c.SetCacheTTL(0)
+	if got := c.EffectiveTTL(); got != CacheTTL {
+		t.Errorf("zero TTL = %s, want the resting %s", got, CacheTTL)
+	}
+}
+
+// TestA429EngagesTheHardFloor is the guardrail: RapidAPI suspends accounts that
+// keep hammering a throttled endpoint, so a 429 must force the resting lifetime
+// back on regardless of what the caller asks for.
+func TestA429EngagesTheHardFloor(t *testing.T) {
+	clock := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c := New("k").Configure(
+		WithBaseURL(srv.URL),
+		WithCachePath(filepath.Join(t.TempDir(), "c.json")),
+		WithClock(func() time.Time { return clock }),
+	)
+	c.SetCacheTTL(FinalRoundCacheTTL)
+	if got := c.EffectiveTTL(); got != FinalRoundCacheTTL {
+		t.Fatalf("before the 429 the TTL should be %s, got %s", FinalRoundCacheTTL, got)
+	}
+
+	_, _, err := c.Leaderboard(context.Background(), req)
+	if err == nil {
+		t.Fatal("want an error on a 429")
+	}
+	if !contains(err.Error(), "429") || !contains(err.Error(), "forced to") {
+		t.Errorf("the error should say the floor engaged: %v", err)
+	}
+
+	throttled, until := c.Throttled()
+	if !throttled {
+		t.Fatal("the hard floor did not engage")
+	}
+	if want := clock.Add(ThrottlePenalty); !until.Equal(want) {
+		t.Errorf("floor lifts at %s, want %s", until, want)
+	}
+
+	// The floor overrides any request while it holds.
+	c.SetCacheTTL(FinalRoundCacheTTL)
+	if got := c.EffectiveTTL(); got != CacheTTL {
+		t.Errorf("TTL = %s while throttled, want the resting %s", got, CacheTTL)
+	}
+}
+
+// TestTheHardFloorLiftsAfterTwentyFourHours.
+func TestTheHardFloorLiftsAfterTwentyFourHours(t *testing.T) {
+	clock := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c := New("k").Configure(
+		WithBaseURL(srv.URL),
+		WithCachePath(filepath.Join(t.TempDir(), "c.json")),
+		WithClock(func() time.Time { return clock }),
+	)
+	c.Leaderboard(context.Background(), req)
+	c.SetCacheTTL(LiveCacheTTL)
+
+	// One minute short of a day: still held.
+	clock = clock.Add(ThrottlePenalty - time.Minute)
+	if got := c.EffectiveTTL(); got != CacheTTL {
+		t.Errorf("TTL = %s just before the floor lifts, want %s", got, CacheTTL)
+	}
+	// Past it: the requested lifetime is honoured again.
+	clock = clock.Add(2 * time.Minute)
+	if got := c.EffectiveTTL(); got != LiveCacheTTL {
+		t.Errorf("TTL = %s after the floor lifts, want the requested %s", got, LiveCacheTTL)
+	}
+	if throttled, _ := c.Throttled(); throttled {
+		t.Error("still reporting throttled after the penalty expired")
+	}
+}
+
+// TestLiveTTLIsHonouredByTheCache: a shorter lifetime must actually cause a
+// refetch, or the cadence switch would be decorative.
+func TestLiveTTLIsHonouredByTheCache(t *testing.T) {
+	var calls atomic.Int32
+	clock := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	c := newTestClient(t, testServer(t, sampleLeaderboard, &calls), func() time.Time { return clock })
+	c.SetCacheTTL(LiveCacheTTL)
+
+	c.Leaderboard(context.Background(), req)
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want 1", calls.Load())
+	}
+	// Inside the live TTL: cached.
+	clock = clock.Add(4 * time.Minute)
+	if _, meta, _ := c.Leaderboard(context.Background(), req); !meta.FromCache {
+		t.Error("a 4-minute-old document should still be cached at a 5-minute TTL")
+	}
+	// Past it: refetched, where the resting hour would still have been cached.
+	clock = clock.Add(2 * time.Minute)
+	if _, meta, _ := c.Leaderboard(context.Background(), req); meta.FromCache {
+		t.Error("a 6-minute-old document should be refetched at a 5-minute TTL")
+	}
+	if calls.Load() != 2 {
+		t.Errorf("calls = %d, want 2", calls.Load())
+	}
+}

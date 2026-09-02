@@ -172,6 +172,12 @@ type Registry struct {
 	// Host is the edge appliance's resource state.
 	Host *HostMetrics
 
+	// Golf is the golf feed's polling state. It is called out separately
+	// because golf is the one provider whose rate is driven by a cache
+	// lifetime on a separate subscription rather than by the licence budget the
+	// limiter manages — so an operator cannot infer it from the tier.
+	Golf *GolfMetrics
+
 	// Flink is the downstream state-buffer gauge. Populated only when a Flink
 	// endpoint is configured; see pkg/ingest/flink.go for why it is optional.
 	Flink *FlinkMetrics
@@ -196,6 +202,14 @@ type HostMetrics struct {
 	// Available is false when no host sampler could be started, so the card
 	// says "unavailable" instead of reporting a confident zero.
 	Available *Flag
+}
+
+// GolfMetrics tracks the golf feed's polling cadence.
+type GolfMetrics struct {
+	// CadenceMinutes is the current interval between leaderboard polls.
+	CadenceMinutes *Gauge
+	// Throttled is true while the 429 hard floor is in force.
+	Throttled *Flag
 }
 
 // FlinkMetrics tracks the downstream state buffer.
@@ -290,6 +304,7 @@ func NewRegistry(now func() time.Time) *Registry {
 			Goroutines: &Gauge{}, Available: &Flag{},
 			CPUSeries: NewTimeSeries(now), MemSeries: NewTimeSeries(now),
 		},
+		Golf: &GolfMetrics{CadenceMinutes: &Gauge{}, Throttled: &Flag{}},
 		Flink: &FlinkMetrics{
 			StateBytes: &Gauge{}, CheckpointAge: &Gauge{}, TTLSeconds: &Gauge{},
 			Reachable: &Flag{}, Configured: &Flag{},

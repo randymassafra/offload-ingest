@@ -33,12 +33,65 @@ import (
 // A live final round genuinely wants fresher data than an hour. That is a TTL
 // decision, not a scheduling one — lower GolfCacheTTL and this loop follows it.
 
-// GolfPollInterval is how often the leaderboard is re-read.
+// GolfPollInterval is the resting interval between leaderboard reads.
 //
-// Slightly under the cache TTL so a poll lands just after the cached copy
-// expires rather than serving a nearly-full-hour-old document for another
-// cycle.
+// Slightly under the resting cache lifetime so a poll lands just after the
+// cached copy expires rather than serving a nearly-full-hour-old document for
+// another cycle. The live intervals below follow the same rule.
 const GolfPollInterval = 55 * time.Minute
+
+// GolfCadence is how often the leaderboard is being polled, and why.
+//
+// Named distinctly from the scheduler's Cadence, which describes the
+// API-Sports sweep rate: the two are different mechanisms answering to
+// different constraints — one a licence budget, the other a cache lifetime on a
+// separate subscription — and sharing a name would invite treating them as one.
+type GolfCadence struct {
+	// Interval between polls.
+	Interval time.Duration
+	// TTL requested of the provider's cache. Polling faster than the cache
+	// lifetime returns identical bytes from disk, so the two move together.
+	TTL time.Duration
+	// Mode is the operator-facing label: "live", "final-round" or "static".
+	Mode string
+	// Reason explains the choice, for the log line on a switch.
+	Reason string
+}
+
+// cadenceFor decides how hard to poll, from what the tournament is doing.
+//
+// Three states, because the audience and the rate of change differ by an order
+// of magnitude between them:
+//
+//	final round   positions move constantly and the audience is largest
+//	in progress   worth following, but a five-minute-old board is defensible
+//	otherwise     the document does not change at all
+//
+// roundID identifies the round in play; 4 is the final round of a standard
+// stroke-play event. It is read from the leaderboard we just fetched, so
+// detecting the final round costs no extra request.
+func cadenceFor(inProgress bool, roundID int) GolfCadence {
+	switch {
+	case inProgress && roundID >= 4:
+		return GolfCadence{
+			Interval: 50 * time.Second, TTL: golfprovider.FinalRoundCacheTTL,
+			Mode:   "final-round",
+			Reason: "final round in play",
+		}
+	case inProgress:
+		return GolfCadence{
+			Interval: 4*time.Minute + 30*time.Second, TTL: golfprovider.LiveCacheTTL,
+			Mode:   "live",
+			Reason: "tournament in progress",
+		}
+	default:
+		return GolfCadence{
+			Interval: GolfPollInterval, TTL: golfprovider.CacheTTL,
+			Mode:   "static",
+			Reason: "no tournament in play; the leaderboard is not changing",
+		}
+	}
+}
 
 // GolfStreamer polls a tournament leaderboard.
 type GolfStreamer struct {
@@ -55,6 +108,12 @@ type GolfStreamer struct {
 	nextDue  time.Time
 	sequence int64
 	resolved bool
+	// entry is the resolved tournament, kept so the cadence can be recomputed
+	// each cycle from its window without re-fetching the schedule.
+	entry golfprovider.ScheduleEntry
+	// cadence is the mode currently in force, so a switch can be logged once
+	// rather than on every poll.
+	cadence GolfCadence
 }
 
 // GolfConfig configures the golf streamer.
@@ -112,7 +171,13 @@ func (g *GolfStreamer) Next(ctx context.Context) ([]generators.Message, error) {
 		g.mu.Unlock()
 		return nil, nil
 	}
-	g.nextDue = g.now().Add(GolfPollInterval)
+	// Provisionally reschedule at the current cadence. It is recomputed below
+	// once the leaderboard says which round is in play.
+	interval := g.cadence.Interval
+	if interval <= 0 {
+		interval = GolfPollInterval
+	}
+	g.nextDue = g.now().Add(interval)
 	g.mu.Unlock()
 
 	if err := g.resolveTournament(ctx); err != nil {
@@ -127,6 +192,7 @@ func (g *GolfStreamer) Next(ctx context.Context) ([]generators.Message, error) {
 	}
 	g.registry.Requests.Inc()
 	g.registry.Sport("golf").Requests.Inc()
+	g.applyCadence(lb)
 	if meta.Stale {
 		g.log.Warn("ingest: serving a stale golf leaderboard",
 			"age", meta.Age.Round(time.Minute), "err", meta.Err)
@@ -216,7 +282,7 @@ func (g *GolfStreamer) resolveTournament(ctx context.Context) error {
 		state = "in progress"
 	}
 	g.mu.Lock()
-	g.tournID, g.resolved = pick.TournID, true
+	g.tournID, g.resolved, g.entry = pick.TournID, true, pick
 	g.mu.Unlock()
 	g.log.Info("golf tournament resolved",
 		"tournament", pick.Name, "id", pick.TournID, "year", g.year,
@@ -236,3 +302,66 @@ func (g *GolfStreamer) Mode() Mode { return ModeProduction }
 
 // Close releases resources.
 func (g *GolfStreamer) Close() error { return nil }
+
+// applyCadence recomputes the polling rate from the tournament's state and the
+// round just read, and pushes the resulting TTL down to the provider.
+//
+// Called after every successful fetch, because the state that decides it —
+// whether the window is open, and which round is in play — is carried on the
+// document we just received. Nothing here costs a request.
+func (g *GolfStreamer) applyCadence(lb *golfprovider.Leaderboard) {
+	now := g.now()
+
+	g.mu.Lock()
+	inProgress := g.entry.InProgress(now)
+	previous := g.cadence
+	g.mu.Unlock()
+
+	next := cadenceFor(inProgress, lb.RoundID.Int())
+
+	// The hard floor overrides everything. A provider that has been throttled
+	// reports the resting lifetime however short a TTL is requested, so the
+	// poll interval has to follow it or the loop would spin against a cache
+	// that is not expiring.
+	if throttled, until := g.client.Throttled(); throttled {
+		next = GolfCadence{
+			Interval: GolfPollInterval, TTL: golfprovider.CacheTTL,
+			Mode: "throttled",
+			Reason: "RapidAPI returned 429; the hard floor holds until " +
+				until.Format(time.RFC3339),
+		}
+	}
+
+	g.client.SetCacheTTL(next.TTL)
+
+	g.mu.Lock()
+	g.cadence = next
+	// Bring the next poll forward if the new cadence is faster than the one
+	// scheduled a moment ago; a switch into the final round should not wait out
+	// a static-mode interval.
+	if due := now.Add(next.Interval); due.Before(g.nextDue) {
+		g.nextDue = due
+	}
+	g.mu.Unlock()
+
+	g.registry.Golf.CadenceMinutes.Set(next.Interval.Minutes())
+	g.registry.Golf.Throttled.Set(next.Mode == "throttled")
+
+	if previous.Mode != next.Mode {
+		level := "switched to"
+		if previous.Mode == "" {
+			level = "starting in"
+		}
+		g.log.Info("golf cadence "+level+" "+next.Mode+" mode",
+			"from", previous.Mode, "to", next.Mode,
+			"poll_every", next.Interval.String(), "cache_ttl", next.TTL.String(),
+			"round", lb.RoundID.Int(), "reason", next.Reason)
+	}
+}
+
+// Cadence reports the polling mode currently in force, for the dashboard.
+func (g *GolfStreamer) Cadence() GolfCadence {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cadence
+}
