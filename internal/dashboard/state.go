@@ -32,6 +32,7 @@ type State struct {
 	Host       HostView      `json:"host"`
 	Flink      FlinkView     `json:"flink"`
 
+	Drops     []DropRow     `json:"drops"`
 	Providers []ProviderRow `json:"providers"`
 	Budgets   []BudgetRow   `json:"budgets"`
 }
@@ -130,6 +131,24 @@ type FlinkView struct {
 	Alert         bool       `json:"alert"`
 	Series        []float64  `json:"series"`
 	Note          string     `json:"note"`
+}
+
+// DropRow is one sport's scope-enforcement summary.
+//
+// Published is the denominator alongside Dropped, so an operator can tell a
+// sport dropping 5 of 1000 records from one dropping 5 of 5 — the same count,
+// completely different situations.
+type DropRow struct {
+	Sport     string           `json:"sport"`
+	Dropped   int64            `json:"dropped"`
+	Published int64            `json:"published"`
+	Rate      float64          `json:"rate"`
+	Reasons   map[string]int64 `json:"reasons"`
+	Mismatch  bool             `json:"mismatch"`
+	// Inconclusive is true when too few records have been seen for the rate to
+	// mean anything yet.
+	Inconclusive bool       `json:"inconclusive"`
+	Health       dds.Health `json:"health"`
 }
 
 // ProviderRow is one sport in the sidebar.

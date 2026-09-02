@@ -287,7 +287,25 @@ type Message struct {
 	FixtureID  string    `json:"fixture_id"`
 	Sequence   int64     `json:"sequence"`
 	Emitted    time.Time `json:"emitted"`
-	Payload    any       `json:"payload"`
+
+	// NormalizedLeagueID and ProviderOrgID are the scope-bearing identity,
+	// normalised out of the payload once when the record enters the pipeline.
+	//
+	// They live on the ENVELOPE, never in the payload. The Kafka value is the
+	// provider's document verbatim — a contract the schema comparison enforces
+	// at 100% path coverage — so a synthetic field injected into it would fail
+	// both that check and TestWriterEmitsBarePayload. Routing metadata travels
+	// beside the payload in headers, and this is routing metadata: it decides
+	// whether the record may be published at all.
+	//
+	// Zero means the payload carried no league, which is normal for a provider
+	// that scopes by tour or for a sport with a single competition.
+	NormalizedLeagueID int    `json:"normalized_league_id,omitempty"`
+	ProviderOrgID      string `json:"provider_org_id,omitempty"`
+	// LeagueName documents the id for logs and drop messages.
+	LeagueName string `json:"league_name,omitempty"`
+
+	Payload any `json:"payload"`
 }
 
 // Key is the Kafka partition key: the provider's own fixture identifier, so

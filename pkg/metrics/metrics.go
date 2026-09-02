@@ -162,6 +162,13 @@ type Registry struct {
 	// detection. Keyed by "topic/partition".
 	partitions map[string]*Counter
 
+	// dropped counts records refused before publication, keyed by
+	// "sport/reason". Scope enforcement is only safe because it is metered:
+	// silently discarding half a feed is its own failure mode, and an operator
+	// seeing a thin card has to be able to tell a quiet day from a licence
+	// mismatch.
+	dropped map[string]*Counter
+
 	// Host is the edge appliance's resource state.
 	Host *HostMetrics
 
@@ -234,6 +241,8 @@ type SportMetrics struct {
 	Throttles *Counter
 	Errors4xx *Counter
 	Errors5xx *Counter
+	// Dropped counts records refused by scope enforcement.
+	Dropped *Counter
 	// ErrorsTransport counts failures that never reached the provider at all —
 	// DNS, TCP, TLS, timeouts. Not attributable to them.
 	ErrorsTransport *Counter
@@ -288,6 +297,7 @@ func NewRegistry(now func() time.Time) *Registry {
 		},
 
 		perSport: map[string]*SportMetrics{},
+		dropped:  map[string]*Counter{},
 		started:  now(), now: now,
 	}
 }
@@ -308,8 +318,8 @@ func (r *Registry) Sport(name string) *SportMetrics {
 	m = &SportMetrics{
 		Requests: &Counter{}, Messages: &Counter{}, Errors: &Counter{},
 		Throttles: &Counter{}, Errors4xx: &Counter{}, Errors5xx: &Counter{},
-		ErrorsTransport: &Counter{},
-		LastLatency:     &Gauge{}, Tokens: &Gauge{}, CrowdWeight: &Gauge{},
+		ErrorsTransport: &Counter{}, Dropped: &Counter{},
+		LastLatency: &Gauge{}, Tokens: &Gauge{}, CrowdWeight: &Gauge{},
 		QuotaRemaining: &Gauge{},
 		MessageRate:    NewTimeSeries(r.now),
 		Latency:        NewHistogram(LatencyBuckets),
@@ -332,6 +342,8 @@ type SportSnapshot struct {
 	Errors5xx       int64     `json:"errors_5xx"`
 	ErrorsTransport int64     `json:"errors_transport"`
 	Throttles       int64     `json:"throttles"`
+	Dropped         int64     `json:"dropped"`
+	DropRate        float64   `json:"drop_rate"`
 	LatencyMS       float64   `json:"latency_ms"`
 	LatencyP95MS    float64   `json:"latency_p95_ms"`
 	Tokens          float64   `json:"tokens"`
@@ -364,11 +376,16 @@ func (r *Registry) Snapshot() Snapshot {
 	sports := make([]SportSnapshot, 0, len(names))
 	for _, n := range names {
 		m := r.perSport[n]
+		dropped := m.Dropped.Value()
+		dropRate := 0.0
+		if total := m.Messages.Value() + dropped; total > 0 {
+			dropRate = float64(dropped) / float64(total)
+		}
 		sports = append(sports, SportSnapshot{
 			Sport: n, Requests: m.Requests.Value(), Messages: m.Messages.Value(),
 			Errors: m.Errors.Value(), Errors4xx: m.Errors4xx.Value(),
 			Errors5xx: m.Errors5xx.Value(), ErrorsTransport: m.ErrorsTransport.Value(),
-			Throttles: m.Throttles.Value(),
+			Throttles: m.Throttles.Value(), Dropped: dropped, DropRate: dropRate,
 			LatencyMS: m.LastLatency.Value(), LatencyP95MS: m.Latency.Quantile(0.95),
 			Tokens: m.Tokens.Value(), CrowdWeight: m.CrowdWeight.Value(),
 			QuotaRemaining: m.QuotaRemaining.Value(),
@@ -545,3 +562,86 @@ func splitPartitionKey(k string) (string, int) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// --- dropped records ---------------------------------------------------------
+
+// DropRateWarn is the share of a sport's feed that may be dropped before the
+// dashboard raises a licence-mismatch warning.
+//
+// Five percent. Below that, an occasional out-of-scope fixture is normal — a
+// bulk sweep returns the provider's whole card and some of it will always sit
+// outside a venue's package. Above it, the licence and the feed disagree about
+// what the venue bought, and somebody needs to look.
+const DropRateWarn = 0.05
+
+// DropSampleFloor is how many records a sport must produce before its drop rate
+// is treated as meaningful.
+//
+// A rate is not evidence on a small sample. The first live run of scope
+// enforcement dropped 7 of 7 basketball records and 4 of 4 soccer records and
+// reported both as a 100% licence mismatch — but the cause was simply that
+// nothing the venue licensed was playing in that window, which is an ordinary
+// Tuesday rather than a misconfigured licence. Warning on it would teach an
+// operator to ignore the warning, which is worse than not having it.
+//
+// Twenty is enough that a sport genuinely serving the wrong leagues will cross
+// it within a couple of sweeps, while a quiet card stays quiet.
+const DropSampleFloor = 20
+
+// RecordDrop books one record refused before publication.
+func (r *Registry) RecordDrop(sport, reason string) {
+	key := sport + "/" + reason
+	r.mu.RLock()
+	c, ok := r.dropped[key]
+	r.mu.RUnlock()
+	if !ok {
+		r.mu.Lock()
+		if c, ok = r.dropped[key]; !ok {
+			c = &Counter{}
+			r.dropped[key] = c
+		}
+		r.mu.Unlock()
+	}
+	c.Inc()
+	r.Sport(sport).Dropped.Inc()
+}
+
+// DropSnapshot is one sport-and-reason drop count.
+type DropSnapshot struct {
+	Sport  string `json:"sport"`
+	Reason string `json:"reason"`
+	Count  int64  `json:"count"`
+}
+
+// Drops returns every drop counter, sorted.
+func (r *Registry) Drops() []DropSnapshot {
+	r.mu.RLock()
+	out := make([]DropSnapshot, 0, len(r.dropped))
+	for key, c := range r.dropped {
+		sport, reason, _ := strings.Cut(key, "/")
+		out = append(out, DropSnapshot{Sport: sport, Reason: reason, Count: c.Value()})
+	}
+	r.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Sport != out[j].Sport {
+			return out[i].Sport < out[j].Sport
+		}
+		return out[i].Reason < out[j].Reason
+	})
+	return out
+}
+
+// DropRate is a sport's dropped share of everything it produced.
+//
+// The denominator is published plus dropped, not published alone: a sport whose
+// entire feed is being refused would otherwise divide by zero and report a
+// healthy 0%, which is the exact opposite of the truth.
+func (r *Registry) DropRate(sport string) float64 {
+	m := r.Sport(sport)
+	dropped := m.Dropped.Value()
+	total := m.Messages.Value() + dropped
+	if total == 0 {
+		return 0
+	}
+	return float64(dropped) / float64(total)
+}

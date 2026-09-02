@@ -12,6 +12,7 @@ import (
 
 	"github.com/offloadintelligence/offload-ingest/internal/generators"
 	"github.com/offloadintelligence/offload-ingest/pkg/ingest/apisports"
+	"github.com/offloadintelligence/offload-ingest/pkg/ingest/scope"
 	"github.com/offloadintelligence/offload-ingest/pkg/metrics"
 )
 
@@ -413,15 +414,23 @@ func (p *ProductionStreamer) toMessages(v apisports.Vertical, s *Sweep) []genera
 		if err := json.Unmarshal(row, &payload); err != nil {
 			continue
 		}
+		// Envelope normalisation. Reading the scope identity here — once, where
+		// the record enters the pipeline — is what lets every stage downstream
+		// see one consistent field regardless of which provider shape it came
+		// from, without anything writing into the payload.
+		id := scope.Normalize(payload)
 		out = append(out, generators.Message{
-			Sport:     sport,
-			Kind:      generators.FeedBoxScore,
-			Endpoint:  spec.BulkPath,
-			Model:     string(v),
-			FixtureID: fixtureID(row),
-			Sequence:  seq,
-			Emitted:   s.FetchedAt,
-			Payload:   payload,
+			Sport:              sport,
+			Kind:               generators.FeedBoxScore,
+			Endpoint:           spec.BulkPath,
+			Model:              string(v),
+			FixtureID:          fixtureID(row),
+			Sequence:           seq,
+			Emitted:            s.FetchedAt,
+			NormalizedLeagueID: id.LeagueID,
+			ProviderOrgID:      id.OrgID,
+			LeagueName:         id.LeagueName,
+			Payload:            payload,
 		})
 	}
 	return out

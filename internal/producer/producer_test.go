@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/offloadintelligence/offload-ingest/internal/generators"
 )
@@ -190,4 +191,60 @@ func keysOf(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestNormalizedScopeTravelsInHeadersNotThePayload pins the envelope-
+// normalisation contract: the scope identity must be readable by a consumer
+// without opening the payload, and the payload must stay the provider's
+// document byte for byte.
+func TestNormalizedScopeTravelsInHeadersNotThePayload(t *testing.T) {
+	m := generators.Message{
+		Sport: generators.SportSoccer, Kind: generators.FeedBoxScore,
+		Endpoint: "/fixtures", Model: "Fixture", FixtureID: "9",
+		Sequence: 1, Emitted: time.Now(),
+		NormalizedLeagueID: 39, ProviderOrgID: "1", LeagueName: "Premier League",
+		Payload: map[string]any{"league": map[string]any{"id": 39}},
+	}
+
+	got := map[string]string{}
+	for _, h := range headersFor(m) {
+		got[h.Key] = string(h.Value)
+	}
+	if got["league"] != "39" {
+		t.Errorf("league header = %q, want 39", got["league"])
+	}
+	if got["org"] != "1" {
+		t.Errorf("org header = %q, want 1", got["org"])
+	}
+
+	// The payload must not have gained anything.
+	b, err := json.Marshal(m.Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, leaked := range []string{
+		"normalized_league_id", "provider_org_id", "league_name", "sport", "fixture_id",
+	} {
+		if _, ok := doc[leaked]; ok {
+			t.Errorf("envelope field %q leaked into the payload", leaked)
+		}
+	}
+}
+
+// TestScopeHeadersAreOmittedWhenAbsent, so a consumer can tell "no league" from
+// "league 0", and a sport carrying neither adds no weight to every record.
+func TestScopeHeadersAreOmittedWhenAbsent(t *testing.T) {
+	m := generators.Message{
+		Sport: generators.SportCricket, Kind: generators.FeedBoxScore,
+		FixtureID: "1", Payload: map[string]any{},
+	}
+	for _, h := range headersFor(m) {
+		if h.Key == "league" || h.Key == "org" {
+			t.Errorf("header %q was emitted with no value to carry", h.Key)
+		}
+	}
 }

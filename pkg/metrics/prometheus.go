@@ -115,6 +115,25 @@ func (r *Registry) WritePrometheus(w io.Writer, product string) error {
 		e.sample("sport_crowd_weight", labels{{"sport", n}}, sports[n].CrowdWeight.Value())
 	}
 
+	// --- dropped records ----------------------------------------------------
+	//
+	// Labelled by sport and reason so a licence mismatch (out_of_scope) is
+	// distinguishable from a modelling gap (unidentified) in a query, not only
+	// on the dashboard.
+	if drops := r.Drops(); len(drops) > 0 {
+		e.help("dropped_records_total", "counter",
+			"Records refused before publication, by sport and reason.")
+		for _, d := range drops {
+			e.sample("dropped_records_total",
+				labels{{"sport", d.Sport}, {"reason", d.Reason}}, float64(d.Count))
+		}
+	}
+	e.help("sport_drop_rate", "gauge",
+		"Dropped share of a sport's feed. Above 0.05 the dashboard warns of a licence mismatch.")
+	for _, n := range names {
+		e.sample("sport_drop_rate", labels{{"sport", n}}, r.DropRate(n))
+	}
+
 	// --- kafka partitions ---------------------------------------------------
 	parts := r.Partitions()
 	if len(parts) > 0 {

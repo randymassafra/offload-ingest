@@ -95,6 +95,22 @@ function render(d) {
     health: healthOf(e.health), alert: e.alert, series: e.series,
   }));
 
+  /* Scope enforcement. Present only once something has been dropped — a card
+     reading zero on every healthy venue is noise. */
+  const drops = d.drops || [];
+  if (drops.length) {
+    const worst = drops[0];
+    cards.push(DDS.card({
+      title: 'Scope enforcement', span: 4,
+      value: worst.inconclusive ? '—' : DDS.pct(worst.rate),
+      unit: worst.inconclusive ? 'sampling' : 'dropped · ' + DDS.esc(worst.sport),
+      sub: drops.map(x => DDS.esc(x.sport) + ' ' + x.dropped + '/' +
+             (x.dropped + x.published) + (x.inconclusive ? ' (sampling)' : '')).join(' · '),
+      health: worst.mismatch ? 'warn' : 'ok',
+      alert: worst.mismatch,
+    }));
+  }
+
   cards.push(DDS.card({
     title: 'Kafka partition balance', span: 4,
     value: (pt.partition_count && !pt.insufficient) ? DDS.pct(pt.skew) : '—',

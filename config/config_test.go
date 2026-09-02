@@ -330,3 +330,91 @@ func TestValidateNeverLeaksASecret(t *testing.T) {
 		t.Errorf("the error leaked a credential:\n%s", err)
 	}
 }
+
+// --- authorised scopes -------------------------------------------------------
+
+// TestAuthorizedScopesAggregatesBothClaims. The licence carries two claims and
+// both must reach the enforced list.
+func TestAuthorizedScopesAggregatesBothClaims(t *testing.T) {
+	authorized, unconstrained := AuthorizedScopes(
+		[]string{"nfl", "soccer", "afl"}, []string{"us", "eu", "apac"})
+
+	bySport := map[string][]int{}
+	for _, a := range authorized {
+		bySport[a.Sport] = append(bySport[a.Sport], a.ID)
+	}
+	if len(bySport["nfl"]) == 0 {
+		t.Error("the NFL claim produced no authorised league")
+	}
+	if len(bySport["soccer"]) < 5 {
+		t.Errorf("soccer authorised %d leagues, expected the licensed set", len(bySport["soccer"]))
+	}
+	// AFL's host serves one competition, so it carries no league restriction.
+	var aflUnconstrained bool
+	for _, s := range unconstrained {
+		if s == "afl" {
+			aflUnconstrained = true
+		}
+	}
+	if !aflUnconstrained && len(bySport["afl"]) == 0 {
+		t.Error("afl is neither constrained nor unconstrained; it was dropped entirely")
+	}
+}
+
+// TestRegionCannotWidenTheAuthorizedList. Regions describe a package; they must
+// never become a second, looser path to content.
+func TestRegionCannotWidenTheAuthorizedList(t *testing.T) {
+	authorized, unconstrained := AuthorizedScopes([]string{"nfl"}, []string{"global"})
+	for _, a := range authorized {
+		if a.Sport != "nfl" {
+			t.Errorf("region 'global' widened a single-sport licence to %s", a.Sport)
+		}
+	}
+	for _, s := range unconstrained {
+		if s != "nfl" {
+			t.Errorf("region 'global' unconstrained %s on an NFL-only licence", s)
+		}
+	}
+}
+
+// TestNoSportClaimAuthorizesNothing: an omission must not widen entitlement.
+func TestNoSportClaimAuthorizesNothing(t *testing.T) {
+	authorized, unconstrained := AuthorizedScopes(nil, []string{"global"})
+	if len(authorized) != 0 || len(unconstrained) != 0 {
+		t.Errorf("a licence with no sports authorised %d scopes and %d sports",
+			len(authorized), len(unconstrained))
+	}
+}
+
+// TestClaimSourceDistinguishesSportFromRegion, so a licence audit can say how a
+// competition was granted.
+func TestClaimSourceDistinguishesSportFromRegion(t *testing.T) {
+	authorized, _ := AuthorizedScopes([]string{"soccer"}, []string{"eu"})
+	if len(authorized) == 0 {
+		t.Fatal("no scopes authorised")
+	}
+	for _, a := range authorized {
+		if a.Source != "region:eu" {
+			t.Errorf("%s source = %q, want it attributed to the eu bundle", a, a.Source)
+		}
+	}
+
+	// With no region claim, the sports list is the grant.
+	authorized, _ = AuthorizedScopes([]string{"soccer"}, nil)
+	for _, a := range authorized {
+		if a.Source != "sport" {
+			t.Errorf("%s source = %q, want \"sport\"", a, a.Source)
+		}
+	}
+}
+
+// TestAuthorizedScopesAreNamed. A drop reported as "league 481 is not licensed"
+// is unactionable; one naming the competition is not.
+func TestAuthorizedScopesAreNamed(t *testing.T) {
+	authorized, _ := AuthorizedScopes([]string{"soccer"}, nil)
+	for _, a := range authorized {
+		if a.Name == "" {
+			t.Errorf("league %d carries no competition name", a.ID)
+		}
+	}
+}

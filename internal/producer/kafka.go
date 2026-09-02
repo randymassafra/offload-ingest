@@ -288,7 +288,7 @@ func (k *Kafka) Publish(ctx context.Context, msgs ...generators.Message) error {
 // is what lets a consumer deserialize the payload with a generated
 // SportsDataIO schema and nothing else.
 func headersFor(m generators.Message) []kafka.Header {
-	return []kafka.Header{
+	h := []kafka.Header{
 		{Key: "sport", Value: []byte(m.Sport)},
 		{Key: "feed", Value: []byte(m.Kind)},
 		{Key: "endpoint", Value: []byte(m.Endpoint)},
@@ -296,6 +296,19 @@ func headersFor(m generators.Message) []kafka.Header {
 		{Key: "sequence", Value: []byte(strconv.FormatInt(m.Sequence, 10))},
 		{Key: "fixture", Value: []byte(m.FixtureID)},
 	}
+	// The normalised scope identity, carried beside the payload rather than
+	// inside it. Emitted only when present so a consumer can tell "no league"
+	// from "league 0", and so a sport that carries neither adds no header
+	// weight to every record.
+	if m.NormalizedLeagueID != 0 {
+		h = append(h, kafka.Header{
+			Key: "league", Value: []byte(strconv.Itoa(m.NormalizedLeagueID)),
+		})
+	}
+	if m.ProviderOrgID != "" {
+		h = append(h, kafka.Header{Key: "org", Value: []byte(m.ProviderOrgID)})
+	}
+	return h
 }
 
 // Close flushes pending batches and closes the underlying writer.

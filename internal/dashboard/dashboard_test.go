@@ -385,3 +385,86 @@ func TestStartBindsAndReportsTheAddress(t *testing.T) {
 		t.Errorf("status = %d", res.StatusCode)
 	}
 }
+
+// --- scope enforcement -------------------------------------------------------
+
+// TestLicenceMismatchWarnsOnlyWithEnoughVolume. The first live run of scope
+// enforcement dropped 7 of 7 basketball records and reported a 100% licence
+// mismatch — but the cause was that nothing licensed was playing, not a bad
+// licence. A warning that fires on an ordinary quiet card teaches operators to
+// ignore it.
+func TestLicenceMismatchWarnsOnlyWithEnoughVolume(t *testing.T) {
+	p := healthy()
+	// A small sample, entirely dropped: suspicious, but not evidence.
+	for i := 0; i < 7; i++ {
+		p.reg.RecordDrop("ncaab", "out_of_scope")
+	}
+	st := state(t, serve(t, p))
+	if len(st.Drops) != 1 {
+		t.Fatalf("got %d drop rows, want 1", len(st.Drops))
+	}
+	row := st.Drops[0]
+	if !row.Inconclusive {
+		t.Error("7 records is below the sample floor and should be inconclusive")
+	}
+	if row.Mismatch {
+		t.Error("a licence mismatch was declared on 7 records")
+	}
+	for _, w := range st.Warnings {
+		if strings.Contains(w.Text, "LICENCE MISMATCH") {
+			t.Errorf("warned on an insufficient sample: %s", w.Text)
+		}
+	}
+}
+
+// TestLicenceMismatchWarnsOnceTheSampleIsBigEnough is the other half: a sport
+// genuinely serving the wrong leagues must be reported.
+func TestLicenceMismatchWarnsOnceTheSampleIsBigEnough(t *testing.T) {
+	p := healthy()
+	for i := 0; i < metrics.DropSampleFloor+5; i++ {
+		p.reg.RecordDrop("soccer", "out_of_scope")
+	}
+	st := state(t, serve(t, p))
+	if len(st.Drops) == 0 {
+		t.Fatal("no drop rows")
+	}
+	row := st.Drops[0]
+	if row.Inconclusive {
+		t.Error("a sample above the floor should not be inconclusive")
+	}
+	if !row.Mismatch {
+		t.Errorf("a 100%% drop rate on %d records should be a mismatch", row.Dropped)
+	}
+	var warned bool
+	for _, w := range st.Warnings {
+		if strings.Contains(w.Text, "LICENCE MISMATCH") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Error("no licence-mismatch warning was raised")
+	}
+	if st.Health != dds.HealthWarn && st.Health != dds.HealthBad {
+		t.Errorf("header health = %s; a mismatch must demote it", st.Health)
+	}
+}
+
+// TestDropReasonsAreSeparated. A modelling gap on our side and a licence
+// mismatch need different people to look at them.
+func TestDropReasonsAreSeparated(t *testing.T) {
+	p := healthy()
+	for i := 0; i < 20; i++ {
+		p.reg.RecordDrop("soccer", "out_of_scope")
+	}
+	for i := 0; i < 5; i++ {
+		p.reg.RecordDrop("soccer", "unidentified")
+	}
+	st := state(t, serve(t, p))
+	if len(st.Drops) == 0 {
+		t.Fatal("no drop rows")
+	}
+	r := st.Drops[0].Reasons
+	if r["out_of_scope"] != 20 || r["unidentified"] != 5 {
+		t.Errorf("reasons = %v, want 20 out_of_scope and 5 unidentified", r)
+	}
+}

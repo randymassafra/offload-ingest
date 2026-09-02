@@ -133,6 +133,7 @@ func (s *Server) State() State {
 	st.Partitions = partitionView(reg)
 	st.Host = hostView(reg)
 	st.Flink = flinkView(reg)
+	st.Drops = dropRows(reg, snap)
 	st.Providers = catalogRows(s.provider.SportCatalog())
 	st.Budgets = budgetRows(s.provider)
 	st.Warnings = warnings(st, now)
@@ -294,6 +295,38 @@ func flinkView(reg *metrics.Registry) FlinkView {
 	return v
 }
 
+// dropRows summarises scope enforcement per sport.
+func dropRows(reg *metrics.Registry, snap metrics.Snapshot) []DropRow {
+	byReason := map[string]map[string]int64{}
+	for _, d := range reg.Drops() {
+		if byReason[d.Sport] == nil {
+			byReason[d.Sport] = map[string]int64{}
+		}
+		byReason[d.Sport][d.Reason] = d.Count
+	}
+	var out []DropRow
+	for _, sp := range snap.Sports {
+		if sp.Dropped == 0 {
+			continue
+		}
+		row := DropRow{
+			Sport: sp.Sport, Dropped: sp.Dropped, Published: sp.Messages,
+			Rate: sp.DropRate, Reasons: byReason[sp.Sport],
+		}
+		row.Health = dds.HealthOK
+		// A rate is only evidence on a large enough sample; see DropSampleFloor.
+		if row.Dropped+row.Published < metrics.DropSampleFloor {
+			row.Inconclusive = true
+		} else if row.Rate >= metrics.DropRateWarn {
+			row.Health = dds.HealthWarn
+			row.Mismatch = true
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Rate > out[j].Rate })
+	return out
+}
+
 func budgetRows(p Provider) []BudgetRow {
 	usage := map[apisports.Vertical]ingest.Stat{}
 	for _, u := range p.Usage() {
@@ -377,6 +410,20 @@ func warnings(st State, now time.Time) []Warning {
 				b.Vertical, int(b.Pressure*100))
 		}
 	}
+	// A licence mismatch: the feed and the licence disagree about what this
+	// venue bought. Reported per sport, because one misconfigured sport is a
+	// very different situation from the whole estate being wrong.
+	for _, d := range st.Drops {
+		// Mismatch already accounts for both the rate and the sample floor;
+		// re-deriving the condition here is how the two drift apart.
+		if !d.Mismatch {
+			continue
+		}
+		add(dds.HealthWarn,
+			"LICENCE MISMATCH — %.0f%% of the %s feed is being dropped as out of scope (%d records). "+
+				"The licensed leagues and the provider's card disagree.",
+			d.Rate*100, d.Sport, d.Dropped)
+	}
 	if st.Errors.Throttles > 0 {
 		add(dds.HealthWarn,
 			"%d rate-limit rejections (429) since start — the limiter has backed off",
@@ -403,6 +450,11 @@ func overall(st State) (dds.Health, string) {
 		}
 	}
 	demote(st.Latency.Health, "latency")
+	for _, d := range st.Drops {
+		if d.Mismatch {
+			demote(dds.HealthWarn, "licence mismatch")
+		}
+	}
 	demote(st.Errors.Health, "errors")
 	demote(st.Drift.Health, "drift")
 	if st.Partitions.Health != dds.HealthUnknown {

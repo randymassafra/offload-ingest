@@ -39,6 +39,15 @@ func runProduction(ctx context.Context, rt *ingest.Runtime, opts *options, sink 
 		defer stop()
 	}
 
+	// Scope enforcement sits between the streamer and the producer, so nothing
+	// reaches a topic without passing the licence check. The providers stay
+	// dumb about entitlements; this is the authoritative control.
+	if v := rt.ScopeValidator(); v != nil {
+		sink = ingest.NewScopedPublisher(sink, v, rt.Registry(), log)
+		log.Info("scope enforcement active",
+			"sports", v.Sports(), "on_violation", "drop and count")
+	}
+
 	streamer := rt.Streamer()
 	log.Info("production ingest starting",
 		"provider", "api-sports",
