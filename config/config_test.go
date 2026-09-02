@@ -185,19 +185,25 @@ func TestLoadReadsEveryVariableOnce(t *testing.T) {
 	}
 }
 
-// TestGolfKeyFallsBackToSportsDataIO. There is no separate golf product; golf
-// is served by SportsDataIO today. The dedicated name exists so provisioning a
-// distinct credential later is a config change rather than a code one, and
-// until then the feed must keep working.
-func TestGolfKeyFallsBackToSportsDataIO(t *testing.T) {
+// TestGolfKeyFallsBackToRapidAPI. Golf is served by live-golf-data, which is
+// RapidAPI-hosted, so the fallback must be the RapidAPI key.
+//
+// This is a regression test for a real failure: the fallback was the
+// SportsDataIO key, and a live run sent that to RapidAPI and got HTTP 403. A
+// credential fallback has to follow whichever vendor actually serves the feed.
+func TestGolfKeyFallsBackToRapidAPI(t *testing.T) {
 	t.Setenv("GOLF_API_KEY", "")
-	t.Setenv("SPORTS_DATA_IO_API_KEY", "shared-sdio-key")
+	t.Setenv("SPORTS_DATA_IO_API_KEY", "sdio-key-wrong-vendor")
+	t.Setenv("RAPIDAPI_KEY", "rapid-key")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.GolfAPIKey != "shared-sdio-key" {
-		t.Errorf("GolfAPIKey = %q, want the SportsDataIO key as fallback", cfg.GolfAPIKey)
+	if cfg.GolfAPIKey != "rapid-key" {
+		t.Errorf("GolfAPIKey = %q, want the RapidAPI key as fallback", cfg.GolfAPIKey)
+	}
+	if cfg.GolfAPIKey == "sdio-key-wrong-vendor" {
+		t.Error("golf must not receive a SportsDataIO key; live-golf-data is RapidAPI-hosted")
 	}
 
 	// And a dedicated key takes precedence when provisioned.
@@ -311,9 +317,10 @@ func TestRealEnvironmentBeatsTheFile(t *testing.T) {
 // pasted into a support ticket; it must never carry a value.
 func TestValidateNeverLeaksASecret(t *testing.T) {
 	t.Setenv("APISPORTS_KEY", "super-secret-value")
+	// Golf falls back to the RapidAPI key, so that has to be cleared too for
+	// the field to actually be missing.
 	t.Setenv("GOLF_API_KEY", "")
-	t.Setenv("SPORTS_DATA_IO_API_KEY", "")
-	t.Setenv("SPORTSDATAIO_API_KEY", "")
+	t.Setenv("RAPIDAPI_KEY", "")
 	cfg, _ := Load("")
 	err := cfg.Validate(RequireAPISports, RequireGolf)
 	if err == nil {

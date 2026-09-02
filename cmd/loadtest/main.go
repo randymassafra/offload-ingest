@@ -187,9 +187,21 @@ func run() error {
 	// provider and must keep running with no credentials at all — that is what
 	// makes round-the-clock load testing possible on a metered plan.
 	if mode == ingest.ModeProduction {
-		if err := cfg.Validate(config.RequireAPISports); err != nil {
+		if err := requireProviders(cfg, config.RequireAPISports); err != nil {
+			log.Error("provider initialisation failed", "err", err)
 			return err
 		}
+	}
+
+	// Directly-constructed providers, threaded from configuration. Golf has no
+	// API-Sports host and volleyball has no pipeline binding yet, so both are
+	// reached through their own clients rather than the sweeper.
+	providers := buildProviders(cfg, log)
+	if providers.Golf != nil {
+		log.Info("golf provider enabled", "host", golfHost(), "cache", providers.Golf.CachePath())
+	}
+	if providers.Volleyball != nil {
+		log.Info("volleyball provider enabled", "vertical", volleyballVertical())
 	}
 	if opts.noLicense && mode == ingest.ModeProduction {
 		return errors.New("-no-license cannot be used in production mode: " +

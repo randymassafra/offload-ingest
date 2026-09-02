@@ -79,11 +79,15 @@ type Config struct {
 	SportsDataIOKey string
 	// GolfAPIKey is the credential the golf feed uses.
 	//
-	// It reads GOLF_API_KEY when set and falls back to SportsDataIOKey, because
-	// golf is served by SportsDataIO today and there is no separate golf
-	// product to hold a distinct key. The dedicated name exists so that giving
-	// golf its own credential later — a different vendor, or a separately
-	// metered subscription — is a configuration change rather than a code one.
+	// It reads GOLF_API_KEY when set and otherwise falls back to RapidAPIKey,
+	// because golf is served by live-golf-data, which is RapidAPI-hosted.
+	//
+	// This fallback was SportsDataIOKey until the live-golf-data provider was
+	// added, and a live run caught it: the golf client sent a SportsDataIO
+	// subscription key to RapidAPI and got HTTP 403. The fallback has to match
+	// whichever vendor actually serves the feed, so it moves when the feed
+	// does. The dedicated name exists so a separately-metered golf
+	// subscription is a configuration change rather than a code one.
 	GolfAPIKey string
 	// RapidAPIKey authenticates the RapidAPI-fronted providers.
 	RapidAPIKey string
@@ -91,6 +95,9 @@ type Config struct {
 	// that key is used against.
 	RapidAPICricketHost   string
 	RapidAPIAllScoresHost string
+
+	// GolfCachePath is where the golf provider caches its leaderboard.
+	GolfCachePath string
 
 	// --- observability ---
 
@@ -145,7 +152,7 @@ func hint(f Field) string {
 	case RequireSportsDataIO:
 		return "serves golf and NASCAR, from sportsdata.io"
 	case RequireGolf:
-		return "the golf feed's key; falls back to SPORTS_DATA_IO_API_KEY when unset"
+		return "the golf feed's key for live-golf-data; falls back to RAPIDAPI_KEY when unset"
 	case RequireRapidAPI:
 		return "serves cricket and tennis, from rapidapi.com"
 	case RequireLicenseKey:
@@ -154,6 +161,13 @@ func hint(f Field) string {
 		return ""
 	}
 }
+
+// LoadConfig reads the whole configuration, searching for a .env file in the
+// working directory and its parents.
+//
+// This is the entry point for a normal startup. Load takes an explicit path for
+// the cases that need one — a test, or a deployment that pins the file.
+func LoadConfig() (*Config, error) { return Load("") }
 
 // Load reads the .env file, then the environment, into a Config.
 //
@@ -187,6 +201,7 @@ func Load(path string) (*Config, error) {
 		RapidAPIKey:           firstSet("RAPIDAPI_KEY"),
 		RapidAPICricketHost:   firstSet("RAPIDAPI_CRICKET_HOST"),
 		RapidAPIAllScoresHost: firstSet("RAPIDAPI_ALLSCORES_HOST"),
+		GolfCachePath:         firstSet("GOLF_CACHE_PATH"),
 
 		DashboardAddr: firstSet("OFFLOAD_DASHBOARD_ADDR"),
 		MetricsAddr:   firstSet("OFFLOAD_METRICS_ADDR"),
@@ -197,14 +212,17 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Golf takes its own key when one is provisioned and otherwise rides on the
-	// SportsDataIO subscription that actually serves it today.
+	// RapidAPI subscription that serves live-golf-data.
 	c.GolfAPIKey = firstSet("GOLF_API_KEY")
 	if c.GolfAPIKey == "" {
-		c.GolfAPIKey = c.SportsDataIOKey
+		c.GolfAPIKey = c.RapidAPIKey
 	}
 
 	if c.LicensePath == "" {
 		c.LicensePath = "license.key"
+	}
+	if c.GolfCachePath == "" {
+		c.GolfCachePath = "testdata/golf_cache.json"
 	}
 	return c, nil
 }
