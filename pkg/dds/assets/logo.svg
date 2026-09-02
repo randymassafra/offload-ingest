@@ -1,0 +1,10 @@
+<svg class="dds-logo" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Offload Intelligence">
+  <rect x="1.5" y="1.5" width="29" height="29" rx="8" stroke="#64FFDA" stroke-width="1.6" opacity=".55"/>
+  <!-- Three streams of decreasing width leaving the node: the offload motif. -->
+  <path d="M7.5 11.5h13" stroke="#64FFDA" stroke-width="2.1" stroke-linecap="round"/>
+  <path d="M7.5 16h9.5"  stroke="#64FFDA" stroke-width="2.1" stroke-linecap="round" opacity=".72"/>
+  <path d="M7.5 20.5h6"  stroke="#64FFDA" stroke-width="2.1" stroke-linecap="round" opacity=".45"/>
+  <!-- The egress arrow. -->
+  <path d="M19.5 20.5l4.5-4.5-4.5-4.5" stroke="#64FFDA" stroke-width="2.1"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,21 @@
+SPORT    FEED                 SCHEMA     HTTP   NOTE
+afl      boxscore             modeled    200    ok
+cricket  boxscore             captured   200    ok
+f1       boxscore             captured   200    plan: Free plans do not have access to this season, try from 2022 to 2024.   (plan or parameter)
+golf     boxscore             captured   200    ok
+golf     playerstats          captured   200    ok
+mma      boxscore             modeled    200    ok
+nascar   boxscore             captured   200    ok
+nascar   reference:drivers    captured   200    ok
+nascar   reference:schedule   captured   200    ok
+nba      boxscore             modeled    200    ok
+ncaab    boxscore             captured   200    ok
+ncaaf    boxscore             modeled    200    ok
+nfl      boxscore             modeled    200    ok
+rugby    boxscore             modeled    200    ok
+soccer   boxscore             captured   200    ok
+tennis   boxscore             captured   200    ok
+ufc      boxscore             modeled    200    ok
+
+17 routes checked, 0 skipped for want of a parameter.
+0 unexpected 404s; 0 known-unreachable (inferred).

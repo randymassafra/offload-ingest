@@ -1,0 +1,44 @@
+# Build output
+/bin/
+/vendor/
+/dist/
+*.log
+*.out
+*.test
+
+# OS noise
+.DS_Store
+
+# Test data
+/testdata/
+
+# --- Secrets ----------------------------------------------------------------
+#
+# These rules are load-bearing on a PUBLIC repository. The directive that
+# initialised this repo listed only the build and OS rules above; everything in
+# this block was added because omitting it would have published live credentials
+# and the licence signing key on the first commit.
+
+# .env holds live provider keys (API-Sports, SportsDataIO, RapidAPI).
+# The template is safe and is committed.
+.env
+!.env.example
+
+# The Ed25519 private key signs every product licence. Publishing it would let
+# anyone issue themselves an unlimited-tier licence for every Offload product,
+# and rotating it invalidates every licence already in the field.
+/keys/
+*.priv
+*.pem
+
+# Issued licences are per-venue artifacts, not source. They embed a tenant id
+# and a hardware fingerprint.
+license.key
+!license.example.key
+
+# --- Captured provider data --------------------------------------------------
+#
+# 15 MB of real responses from API-Sports, Cricbuzz, AllScores and SportsDataIO.
+# Licensed content under those providers' terms, so it is not ours to
+# redistribute — and it is regenerable with `make capture`.
+/fixtures/

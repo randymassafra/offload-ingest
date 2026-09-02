@@ -1,0 +1,107 @@
+# Local ingest load-test stack. Every service is pinned to linux/amd64 so the
+# images match the deployment target; on an arm64 workstation Docker runs them
+# under emulation, while the loadtest binary itself is cross-compiled natively
+# by the builder stage in deployments/Dockerfile.
+name: offload-ingest
+
+x-platform: &platform linux/amd64
+
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    platform: *platform
+    container_name: offload-kafka
+    ports:
+      - "9092:9092"   # host clients
+      - "9094:9094"   # in-network clients
+    environment:
+      # Single-node KRaft: no ZooKeeper, no external coordination.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9094,CONTROLLER://:9093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9094,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 12
+      # Load tests fill disk fast; keep only an hour of data.
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_LOG_SEGMENT_BYTES: 268435456
+      CLUSTER_ID: offload-ingest-local-cluster
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9094 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    platform: *platform
+    container_name: offload-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: offload-ingest-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9094
+      DYNAMIC_CONFIG_ENABLED: "true"
+    restart: unless-stopped
+
+  loadtest:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+      platforms:
+        - linux/amd64
+      args:
+        TARGETOS: linux
+        TARGETARCH: amd64
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    image: offload-ingest/loadtest:${VERSION:-dev}
+    platform: *platform
+    container_name: offload-loadtest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8088:8088"   # inbound webhook receiver
+    environment:
+      KAFKA_BROKERS: kafka:9094
+    command:
+      - "-brokers=kafka:9094"
+      - "-topic=ingest"
+      # Split by sport and feed kind: a 168 KB play-by-play document and a
+      # 186 byte telemetry row have nothing in common downstream.
+      - "-topic-per-sport"
+      - "-topic-per-feed"
+      - "-sports=all"
+      # Pollers carry the heavy, slow-moving endpoints.
+      - "-poll-workers=39"
+      - "-poll-kinds=boxscore,playerstats,playbyplay"
+      - "-poll-interval=2s"
+      # Webhook emitters carry the high-frequency tail.
+      - "-burst-emitters=13"
+      - "-burst-kinds=telemetry,playbyplay"
+      - "-burst-size=25"
+      - "-burst-interval=3s"
+      - "-webhook-addr=:8088"
+      - "-stats-every=10s"
+    # A load generator should never take the stack down with it on exit.
+    restart: "no"
+
+volumes:
+  kafka-data:

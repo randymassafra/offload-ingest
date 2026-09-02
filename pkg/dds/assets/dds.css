@@ -1,0 +1,296 @@
+/* Offload Intelligence — Dashboard Design System 1.0.0
+ *
+ * Shared by Ingest, LiveMesh, Relic and Atmos. Nothing product-specific belongs
+ * in this file; a rule that only one dashboard needs is a sign the component is
+ * wrong, not that the system needs an exception.
+ *
+ * Nothing here reaches the network: no remote imports, no external url()
+ * references, no web fonts. The system font stack is a deliberate choice rather
+ * than a shortcut, because an appliance behind a restrictive network must render
+ * identically offline. A test asserts this file stays self-contained. */
+
+:root {
+  /* Mandated tokens. */
+  --bg:        #0A192F;
+  --highlight: #64FFDA;
+  --label:     #8892B0;
+
+  /* Derived companions. */
+  --panel:  #112240;
+  --line:   #1D3557;
+  --text:   #CCD6F6;
+  --subtle: #0D2137;
+
+  /* Status. */
+  --ok:   #3DDC97;
+  --warn: #FFC857;
+  --bad:  #FF5C5C;
+
+  --radius: 10px;
+  --gap: 16px;
+
+  /* A single fixed dark identity. The DDS defines no light palette, and an
+   * appliance mounted behind a bar has one lighting condition — offering a
+   * light mode would mean shipping a second, unspecified and untested look. */
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- header ------------------------------------------------------- */
+
+.dds-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel), var(--bg));
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.dds-logo { flex: none; width: 30px; height: 30px; display: block; }
+
+.dds-product { font-size: 16px; font-weight: 650; letter-spacing: .2px; margin: 0; }
+.dds-product small {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--label);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.dds-header-spacer { flex: 1; }
+
+.dds-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-size: 12px;
+  color: var(--label);
+}
+.dds-header-meta b {
+  display: block;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Status lamp — the one element every product's header carries. */
+.dds-status { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.dds-lamp {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--label);
+  box-shadow: 0 0 0 3px rgba(136,146,176,.14);
+  flex: none;
+}
+.dds-lamp[data-health="ok"]   { background: var(--ok);   box-shadow: 0 0 0 3px rgba(61,220,151,.16); }
+.dds-lamp[data-health="warn"] { background: var(--warn); box-shadow: 0 0 0 3px rgba(255,200,87,.16); }
+.dds-lamp[data-health="bad"]  { background: var(--bad);  box-shadow: 0 0 0 3px rgba(255,92,92,.18); }
+
+/* ---------- shell: sidebar + 12-column grid ------------------------------ */
+
+.dds-shell { display: flex; align-items: flex-start; }
+
+.dds-sidebar {
+  flex: none;
+  width: 232px;
+  padding: 18px 14px 40px;
+  border-right: 1px solid var(--line);
+  position: sticky;
+  top: 59px;
+  max-height: calc(100vh - 59px);
+  overflow-y: auto;
+}
+
+.dds-main { flex: 1; min-width: 0; padding: 18px 22px 44px; }
+
+/* The 12-column grid. Cards declare a span; anything that does not fit wraps.
+ * Below 1100px the grid collapses to 6 columns and then to 1, so a phone in a
+ * cellar still gives a readable answer. */
+.dds-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--gap);
+}
+.dds-col-3  { grid-column: span 3; }
+.dds-col-4  { grid-column: span 4; }
+.dds-col-6  { grid-column: span 6; }
+.dds-col-8  { grid-column: span 8; }
+.dds-col-12 { grid-column: span 12; }
+
+@media (max-width: 1100px) {
+  .dds-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .dds-col-3 { grid-column: span 3; }
+  .dds-col-4, .dds-col-6 { grid-column: span 6; }
+  .dds-col-8, .dds-col-12 { grid-column: span 6; }
+}
+@media (max-width: 720px) {
+  .dds-shell { flex-direction: column; }
+  .dds-sidebar { width: 100%; position: static; max-height: none;
+                 border-right: 0; border-bottom: 1px solid var(--line); }
+  .dds-grid { grid-template-columns: 1fr; }
+  .dds-col-3, .dds-col-4, .dds-col-6, .dds-col-8, .dds-col-12 { grid-column: span 1; }
+}
+
+/* ---------- card --------------------------------------------------------- */
+
+/* Every metric card carries the same four things: title, current value, a
+ * one-hour sparkline, and a health lamp. The anatomy is fixed so an operator
+ * reads any card in any product the same way. */
+.dds-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 132px;
+  position: relative;
+  overflow: hidden;
+}
+
+.dds-card-head { display: flex; align-items: center; gap: 8px; }
+.dds-card-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--label);
+  margin: 0;
+}
+.dds-card-head .dds-lamp { margin-left: auto; }
+
+.dds-card-value {
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.1;
+  color: var(--highlight);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+.dds-card-value .dds-unit {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--label);
+  margin-left: 5px;
+  letter-spacing: 0;
+}
+.dds-card-sub { font-size: 12px; color: var(--label); margin-top: -2px; }
+
+/* Sparkline: one hour of history, rendered as an inline SVG the page builds
+ * itself. No charting library — a dependency that big to draw sixty points
+ * would be the largest thing in the binary. */
+.dds-spark { margin-top: auto; height: 34px; width: 100%; display: block; }
+.dds-spark .dds-spark-line { fill: none; stroke: var(--highlight); stroke-width: 1.5;
+                             stroke-linejoin: round; stroke-linecap: round; }
+.dds-spark .dds-spark-area { fill: var(--highlight); opacity: .10; }
+.dds-spark-empty { font-size: 10px; fill: var(--label); }
+
+/* ---------- alert pulse -------------------------------------------------- */
+
+/* A card that has crossed its threshold pulses. Subtle on purpose: the point is
+ * to catch peripheral vision on a wall-mounted screen, not to demand attention
+ * from someone already looking at it. */
+@keyframes dds-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,92,92,0); border-color: var(--line); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,92,92,.13); border-color: var(--bad); }
+}
+@keyframes dds-pulse-warn {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,200,87,0); border-color: var(--line); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,200,87,.13); border-color: var(--warn); }
+}
+
+.dds-card[data-alert="bad"]  { animation: dds-pulse 2.4s ease-in-out infinite; }
+.dds-card[data-alert="warn"] { animation: dds-pulse-warn 3.2s ease-in-out infinite; }
+
+/* Motion is an enhancement, never the only signal. A viewer who has asked for
+ * reduced motion still gets the border colour and the lamp — the information is
+ * in the colour, and the animation only draws the eye to it. */
+@media (prefers-reduced-motion: reduce) {
+  .dds-card[data-alert="bad"],
+  .dds-card[data-alert="warn"] { animation: none; }
+  .dds-card[data-alert="bad"]  { border-color: var(--bad); }
+  .dds-card[data-alert="warn"] { border-color: var(--warn); }
+}
+
+/* ---------- sidebar list ------------------------------------------------- */
+
+.dds-side-title {
+  font-size: 10px; font-weight: 600; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--label);
+  margin: 0 0 10px 6px;
+}
+.dds-side-list { list-style: none; margin: 0 0 22px; padding: 0; }
+.dds-side-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 8px; border-radius: 7px; font-size: 13px;
+}
+.dds-side-item:hover { background: var(--subtle); }
+.dds-side-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dds-side-meta { font-size: 11px; color: var(--label); font-variant-numeric: tabular-nums; }
+.dds-side-item[data-muted="true"] .dds-side-name { color: var(--label); }
+
+/* ---------- shared primitives -------------------------------------------- */
+
+.dds-bar { height: 5px; border-radius: 3px; background: var(--subtle); overflow: hidden; }
+.dds-bar > i { display: block; height: 100%; background: var(--highlight); }
+.dds-bar > i[data-health="warn"] { background: var(--warn); }
+.dds-bar > i[data-health="bad"]  { background: var(--bad); }
+
+table.dds-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+table.dds-table th {
+  text-align: left; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--label); font-weight: 600;
+  padding: 0 10px 8px 0;
+}
+table.dds-table td { padding: 7px 10px 7px 0; border-top: 1px solid var(--line); }
+table.dds-table tr:first-child td { border-top: 0; }
+
+.dds-pill {
+  font: 600 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 2px 8px; border-radius: 99px;
+  border: 1px solid var(--line); color: var(--label);
+  text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+}
+.dds-pill[data-health="ok"]   { color: var(--ok);   border-color: rgba(61,220,151,.4); }
+.dds-pill[data-health="warn"] { color: var(--warn); border-color: rgba(255,200,87,.4); }
+.dds-pill[data-health="bad"]  { color: var(--bad);  border-color: rgba(255,92,92,.4); }
+
+.dds-banner {
+  border-left: 3px solid var(--warn);
+  background: rgba(255,200,87,.08);
+  padding: 9px 14px; border-radius: 0 7px 7px 0; margin-bottom: 8px;
+  font-size: 13px;
+}
+.dds-banner[data-health="bad"] { border-left-color: var(--bad); background: rgba(255,92,92,.09); }
+
+.dds-muted { color: var(--label); }
+.dds-mono  { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--label); }
+.dds-num   { font-variant-numeric: tabular-nums; }
+
+.dds-mode {
+  font: 600 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 3px 9px; border-radius: 99px;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.dds-mode[data-mode="production"] {
+  background: rgba(100,255,218,.12); color: var(--highlight);
+  border: 1px solid rgba(100,255,218,.35);
+}
+.dds-mode[data-mode="simulation"] {
+  background: rgba(255,200,87,.12); color: var(--warn);
+  border: 1px solid rgba(255,200,87,.35);
+}

@@ -1,0 +1,37 @@
+SPORT    FEED                  REAL PATHS   MATCHED   COVER   NOTES
+afl      boxscore                       -         -       -   no capture bound (modeled)
+afl      telemetry                      -         -       -   no capture bound (modeled)
+cricket  boxscore                     115       115    100%   0 missing / 0 extra
+cricket  playerstats                   23        23    100%   0 missing / 0 extra
+cricket  telemetry                      5         5    100%   0 missing / 0 extra
+f1       boxscore                      25        25    100%   0 missing / 3 extra
+f1       telemetry                     33        33    100%   0 missing / 6 extra
+golf     boxscore                     123       123    100%   0 missing / 0 extra
+golf     playerstats                   92        92    100%   0 missing / 0 extra
+golf     telemetry                     13        13    100%   0 missing / 0 extra
+mma      boxscore                       -         -       -   no capture bound (modeled)
+mma      telemetry                      -         -       -   no capture bound (modeled)
+nascar   boxscore                      52        52    100%   0 missing / 0 extra
+nascar   playerstats                   30        30    100%   0 missing / 0 extra
+nascar   reference:drivers             20        20    100%   0 missing / 0 extra
+nascar   reference:schedule            21        21    100%   0 missing / 0 extra
+nascar   telemetry                     29        29    100%   0 missing / 0 extra
+nba      boxscore                       -         -       -   no capture bound (modeled)
+nba      telemetry                      -         -       -   no capture bound (modeled)
+ncaab    boxscore                      47        47    100%   0 missing / 0 extra
+ncaab    telemetry                     55        55    100%   0 missing / 3 extra
+ncaaf    boxscore                       -         -       -   no capture bound (modeled)
+ncaaf    telemetry                      -         -       -   no capture bound (modeled)
+nfl      boxscore                       -         -       -   no capture bound (modeled)
+nfl      telemetry                      -         -       -   no capture bound (modeled)
+rugby    boxscore                       -         -       -   no capture bound (modeled)
+rugby    telemetry                      -         -       -   no capture bound (modeled)
+soccer   boxscore                      56        56    100%   0 missing / 16 extra
+soccer   telemetry                     83        83    100%   0 missing / 0 extra
+tennis   boxscore                      90        90    100%   0 missing / 5 extra
+tennis   playerstats                   22        22    100%   0 missing / 0 extra
+tennis   telemetry                      7         7    100%   0 missing / 2 extra
+ufc      boxscore                       -         -       -   no capture bound (modeled)
+ufc      telemetry                      -         -       -   no capture bound (modeled)
+
+20 feeds compared against captures, 20 at full coverage; 14 have no capture bound.
