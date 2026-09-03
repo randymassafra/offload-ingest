@@ -1,0 +1,448 @@
+# CI for offload-ingest.
+#
+# The job that justifies this file is `image`. Everything else here is standard
+# Go hygiene that a careful developer runs locally anyway; the image build is
+# the one check that cannot be run by `go test` and that has already failed in
+# this repository once. The Dockerfile pinned golang:1.24-alpine against a
+# module declaring `go 1.25.0`, so the appliance image could not be built at
+# all, and nothing in the test suite could ever have noticed.
+#
+# The four jobs run in parallel on purpose. A `go vet` failure must not hide a
+# broken Dockerfile: they are independent classes of defect, and an engineer
+# fixing one wants to already know about the other rather than discovering it on
+# the next push.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A force-push or a quick second commit should not leave the first run burning
+# minutes on a commit nobody is waiting for. In-progress runs on the same ref
+# are cancelled — except on main, where every commit's result is worth keeping
+# because it is what a release is cut from.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  # One place to change the Go version. It must stay in step with the `go`
+  # directive in go.mod and with the builder image in deployments/Dockerfile —
+  # which is exactly what the `versions` job below enforces.
+  GO_VERSION: "1.25.0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The guard against the specific defect that prompted this file.
+  # ---------------------------------------------------------------------------
+  #
+  # The `image` job below also catches a Go version mismatch, but it catches it
+  # slowly and badly: several minutes into a build, as a compiler error buried
+  # in a log. This job fails in about two seconds and names the problem. Both
+  # are kept — this one for the message, that one for the proof.
+  versions:
+    name: Go version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: go.mod, Dockerfile and workflow must agree
+        run: |
+          set -euo pipefail
+
+          mod=$(grep -E '^go [0-9]' go.mod | awk '{print $2}')
+          img=$(grep -oE 'golang:[0-9]+\.[0-9]+(\.[0-9]+)?' deployments/Dockerfile | head -1 | cut -d: -f2)
+          ci="${GO_VERSION}"
+
+          # Compared on major.minor only. go.mod pins a patch (1.25.0) while the
+          # builder image tracks a floating minor tag (golang:1.25-alpine), and
+          # that difference is deliberate: the image should pick up patch
+          # releases without a commit here. A minor-version drift is the
+          # breaking one, because the toolchain refuses a module that requires
+          # a newer minor than it provides.
+          minor() { echo "$1" | cut -d. -f1,2; }
+
+          echo "go.mod              : $mod"
+          echo "deployments/Dockerfile : $img"
+          echo "this workflow       : $ci"
+
+          fail=0
+          if [ "$(minor "$mod")" != "$(minor "$img")" ]; then
+            echo "::error file=deployments/Dockerfile::Builder image is Go $img but go.mod requires $mod. The image cannot compile this module; the build will fail with 'go.mod requires go >= $mod'."
+            fail=1
+          fi
+          if [ "$(minor "$mod")" != "$(minor "$ci")" ]; then
+            echo "::error file=.github/workflows/ci.yml::CI installs Go $ci but go.mod requires $mod. CI would be testing against a different toolchain than the module declares."
+            fail=1
+          fi
+          exit $fail
+
+  # ---------------------------------------------------------------------------
+  # Go validation.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Quoted, and pinned to an exact patch. Unquoted, YAML reads 1.25 as
+          # the float 1.25 and setup-go would resolve something unintended.
+          go-version: "${{ env.GO_VERSION }}"
+          # go.sum is the right cache key: dependencies change when it does.
+          cache-dependency-path: go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: go.mod and go.sum are tidy
+        run: |
+          # A drifting go.mod is how a dependency gets added to one developer's
+          # machine and nobody else's. Restored afterwards so later steps see
+          # the committed state either way.
+          cp go.mod go.mod.ci-bak
+          cp go.sum go.sum.ci-bak
+          go mod tidy
+          if ! diff -q go.mod go.mod.ci-bak >/dev/null || ! diff -q go.sum go.sum.ci-bak >/dev/null; then
+            echo "::error::go mod tidy changed go.mod or go.sum. Run it locally and commit the result."
+            diff -u go.mod.ci-bak go.mod || true
+            diff -u go.sum.ci-bak go.sum || true
+            exit 1
+          fi
+          rm go.mod.ci-bak go.sum.ci-bak
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build every package
+        # Catches a compile break in a package that has no tests — three cmd/
+        # mains and two wire-model packages have none, so `go test` alone would
+        # let a broken one through.
+        run: go build ./...
+
+      - name: Test with the race detector
+        # -count=1 defeats the test cache. A cached PASS from a previous commit
+        # is not evidence about this one.
+        run: go test -race -count=1 ./...
+
+      # -----------------------------------------------------------------------
+      # Known gap, surfaced rather than hidden.
+      # -----------------------------------------------------------------------
+      #
+      # /fixtures/ is gitignored, so every capture-backed test calls t.Skip on a
+      # fresh clone — which is every CI run. Those are among the most valuable
+      # tests in the repository: the golf `thru` defect, which broke the entire
+      # leaderboard decode in production, is caught by one of them and would NOT
+      # have been caught here.
+      #
+      # This step does not fail the build, because failing on a known and
+      # documented gap trains people to ignore red. It prints the count so the
+      # gap stays visible until it is closed. See TODO.md, "The capture-backed
+      # tests do not run on a clean clone".
+      - name: Report skipped tests
+        if: always()
+        run: |
+          skipped=$(go test -count=1 ./... -run '.*' -v 2>/dev/null | grep -c '^--- SKIP' || true)
+          echo "Skipped tests: ${skipped:-0}"
+          if [ "${skipped:-0}" -gt 0 ]; then
+            echo "::warning::${skipped} test(s) skipped. Capture-backed tests skip on a clean clone because /fixtures/ is gitignored — see TODO.md."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The appliance image.
+  # ---------------------------------------------------------------------------
+  image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # BuildKit is required, not optional. The Dockerfile opens with a
+      # `# syntax=docker/dockerfile:1.7` directive and uses
+      # `RUN --mount=type=cache`, neither of which the legacy builder
+      # understands.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the appliance image
+        # ---------------------------------------------------------------------
+        # THE CONTEXT IS THE REPOSITORY ROOT, NOT deployments/.
+        # ---------------------------------------------------------------------
+        #
+        # This mirrors the local build exactly. deployments/docker-compose.yml
+        # declares:
+        #
+        #     build:
+        #       context: ..                          <- the repo root
+        #       dockerfile: deployments/Dockerfile
+        #
+        # so the Dockerfile's `COPY go.mod go.sum ./` and `COPY . .` resolve
+        # against the root. A plain `docker build .` run from the root fails
+        # outright — there is no Dockerfile there — and a `docker build .` run
+        # from deployments/ would succeed at finding the Dockerfile but hand it
+        # a context containing only deployments/, so `COPY go.mod` would fail.
+        # Neither is the local build. `-f deployments/Dockerfile .` from the
+        # root is.
+        #
+        # The build args match the compose defaults so CI exercises the same
+        # code path, with the real commit substituted for the placeholder.
+        run: |
+          docker build \
+            -f deployments/Dockerfile \
+            --build-arg TARGETOS=linux \
+            --build-arg TARGETARCH=amd64 \
+            --build-arg VERSION="ci-${GITHUB_SHA::7}" \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t offload-ingest/loadtest:ci \
+            .
+
+      - name: The built binary runs
+        # An image that builds but whose entrypoint is broken has not been
+        # tested by building it. -version touches no network, no licence and no
+        # credential, so it is a safe liveness check for the artifact itself.
+        run: docker run --rm offload-ingest/loadtest:ci -version
+
+      - name: The health probe is present in the image
+        # The container HEALTHCHECK in docker-compose.yml invokes this flag.
+        # The runtime image is distroless, so if the flag were ever dropped the
+        # healthcheck would fail with an unhelpful exec error rather than a
+        # missing-flag message. Exit code 1 against a dead address is the
+        # correct, expected answer here; the check is that the flag exists and
+        # the binary reaches the network at all.
+        run: |
+          if docker run --rm offload-ingest/loadtest:ci \
+               -health-check=http://127.0.0.1:1/health 2>&1 | grep -q 'health-check:'; then
+            echo "health probe present"
+          else
+            echo "::error::the -health-check flag is missing from the built image; the container HEALTHCHECK in deployments/docker-compose.yml will not work"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Deployment manifests: the simulation / live split.
+  # ---------------------------------------------------------------------------
+  #
+  # The split is a safety property, not a convenience. Simulation must run on a
+  # bare clone with nothing configured, and live ingest must be impossible to
+  # start by accident, because starting it spends metered quota against a real
+  # key. Both halves are asserted here.
+  #
+  # This job earned its place immediately: it caught that the base stack could
+  # NOT start without APISPORTS_KEY, because Compose interpolates every
+  # variable in a file before it applies profiles — so a guard on a profiled
+  # service still broke the unprofiled default. The fix was to move the live
+  # services into docker-compose.production.yml as an overlay.
+  compose:
+    name: Compose simulation/live split
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 1. Simulation is the default, and needs nothing.
+      # -----------------------------------------------------------------------
+      - name: Default stack resolves with an empty environment
+        # `env -i` is the point of this step. Inheriting the runner's
+        # environment would let a variable set elsewhere in the workflow mask
+        # exactly the failure being tested for.
+        run: |
+          cd deployments
+          env -i PATH="$PATH" HOME="$HOME" docker compose config >/dev/null
+          services=$(env -i PATH="$PATH" HOME="$HOME" docker compose config --services | sort | tr '\n' ' ')
+          echo "default services: $services"
+          case "$services" in
+            *ingest*|*prometheus*)
+              echo "::error file=deployments/docker-compose.yml::a live service is reachable from the default stack; simulation must be the only default"
+              exit 1 ;;
+          esac
+
+      - name: Default stack starts with no credentials
+        # A manifest that resolves is not a stack that runs. This step exists
+        # because the two came apart once already: the loadtest service carried
+        # no licence and no -no-license flag, so Kafka would come up, the
+        # generator would exit on "this build has no license public key", and
+        # the stack would look healthy while producing nothing.
+        run: |
+          cd deployments
+          env -i PATH="$PATH" HOME="$HOME" docker compose up -d --wait --wait-timeout 180
+
+          # Every service must still be running. `up --wait` returns once
+          # healthchecks pass, but a container that starts and immediately
+          # exits can slip through, which is the failure mode above.
+          sleep 10
+          failed=0
+          for svc in $(env -i PATH="$PATH" HOME="$HOME" docker compose config --services); do
+            cid=$(env -i PATH="$PATH" HOME="$HOME" docker compose ps -q "$svc")
+            state=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo missing)
+            echo "  $svc: $state"
+            if [ "$state" != "running" ]; then
+              echo "::error file=deployments/docker-compose.yml::service '$svc' is '$state', not running, in the credential-free default stack"
+              docker logs "$cid" 2>&1 | tail -30 || true
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: Tear the default stack down
+        if: always()
+        run: |
+          cd deployments
+          env -i PATH="$PATH" HOME="$HOME" docker compose down -v --remove-orphans || true
+
+      # -----------------------------------------------------------------------
+      # 2. Live ingest refuses to start without a key.
+      # -----------------------------------------------------------------------
+      - name: Production overlay refuses to start without APISPORTS_KEY
+        # The guard that stops someone burning a free tier's daily budget by
+        # running the wrong command in the wrong directory. Asserting it here
+        # keeps it from being quietly removed — a guard nobody tests is a guard
+        # that stops working without anyone noticing.
+        run: |
+          cd deployments
+          if env -i PATH="$PATH" HOME="$HOME" VENUE_ID=ci \
+               docker compose -f docker-compose.yml -f docker-compose.production.yml \
+               config >/dev/null 2>&1; then
+            echo "::error file=deployments/docker-compose.production.yml::the production overlay resolved without APISPORTS_KEY; the required-variable guard has been removed"
+            exit 1
+          fi
+          echo "guard intact: the live stack will not start unkeyed"
+
+      - name: Production overlay resolves once a key is supplied
+        # The mirror of the step above. Without it, a typo that broke the
+        # overlay outright would look identical to a working guard: both fail.
+        env:
+          APISPORTS_KEY: ci-placeholder
+          VENUE_ID: ci
+        run: |
+          cd deployments
+          docker compose -f docker-compose.yml -f docker-compose.production.yml config >/dev/null
+          services=$(docker compose -f docker-compose.yml -f docker-compose.production.yml config --services | sort | tr '\n' ' ')
+          echo "production services: $services"
+          for required in ingest prometheus kafka; do
+            case "$services" in
+              *"$required"*) ;;
+              *) echo "::error::the production stack is missing '$required'"; exit 1 ;;
+            esac
+          done
+
+      # -----------------------------------------------------------------------
+      # 3. Mode logic: which providers are live, and which are simulated.
+      # -----------------------------------------------------------------------
+      #
+      # Asserted against the real binary reading the real gauge, not against a
+      # config file. offload_ingest_provider_mode reports what the runtime
+      # actually assembled: 1 = contacting a vendor and spending quota, 0 =
+      # served by the local generators.
+      #
+      # WHAT THIS CAN AND CANNOT PROVE. The 0 case is exercised here for real.
+      # The 1 case is NOT, and cannot be without committing a live APISPORTS_KEY
+      # to a public repository and spending metered quota on every push. It is
+      # covered exhaustively by unit tests in pkg/metrics/mode_test.go instead.
+      # Saying so plainly matters more than a green tick that implies otherwise.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "${{ env.GO_VERSION }}"
+          cache-dependency-path: go.sum
+
+      - name: Issue a development licence
+        # The runtime refuses to start unlicensed, and no licence can be
+        # committed. It is issued here instead: the signing pair is generated
+        # on the runner, used once, and discarded with the job. Nothing secret
+        # crosses the repository boundary.
+        run: |
+          make keygen
+          make license TIER=free
+          test -s license.key || { echo "::error::licence was not issued"; exit 1; }
+
+      - name: Every provider reports 0 when no provider key is set
+        # The credential-free case. All four providers must report simulation:
+        #   apisports  - the process is not in production mode
+        #   livegolf   - same, and GOLF_API_KEY is unset
+        #   cricbuzz   - no production streamer exists at all
+        #   allscores  - no production streamer exists at all
+        #
+        # The last two are 0 in EVERY mode, key or no key, because neither
+        # sport has a live path in the runtime. A check derived from
+        # configuration would call them live because RAPIDAPI_KEY is used by
+        # the schema tooling; this one reads what was assembled.
+        run: |
+          set -uo pipefail
+          go build -o /tmp/loadtest ./cmd/loadtest
+
+          env -u APISPORTS_KEY -u GOLF_API_KEY -u RAPIDAPI_KEY \
+            OFFLOAD_LICENSE_PUBKEY="$(cat keys/license.pub)" \
+            /tmp/loadtest -mode simulation -dry-run -duration 45s -stats-every 0 \
+            -metrics-addr :9102 > /tmp/sim.log 2>&1 &
+          pid=$!
+          trap 'kill $pid 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            sleep 1
+            curl -sSf http://127.0.0.1:9102/metrics >/dev/null 2>&1 && break
+          done
+
+          modes=$(curl -sSf http://127.0.0.1:9102/metrics | grep 'offload_ingest_provider_mode{' || true)
+          if [ -z "$modes" ]; then
+            echo "::error::no offload_ingest_provider_mode series was exported"
+            tail -40 /tmp/sim.log
+            exit 1
+          fi
+          echo "$modes"
+
+          fail=0
+          for provider in apisports livegolf cricbuzz allscores; do
+            value=$(echo "$modes" | grep "provider=\"$provider\"" | awk '{print $NF}')
+            if [ -z "$value" ]; then
+              echo "::error::provider '$provider' exported no mode series at all"
+              fail=1
+            elif [ "$value" != "0" ]; then
+              echo "::error::provider '$provider' reports $value (live) with no API key set; it must report 0 (simulation)"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: The mode gauge is unit-tested for the live case too
+        # The 1 case cannot be exercised above without real credentials, so the
+        # tests that do cover it are named and run explicitly. If they are ever
+        # deleted, this step fails rather than the coverage silently vanishing.
+        run: |
+          out=$(go test ./pkg/metrics/ -run 'TestLiveProviderReportsOne|TestProvidersAreReportedIndependently|TestZeroIsExportedNotSuppressed' -v -count=1)
+          echo "$out" | grep -E '^(=== RUN|--- PASS|--- FAIL)'
+          for required in TestLiveProviderReportsOne TestProvidersAreReportedIndependently; do
+            echo "$out" | grep -q -- "--- PASS: $required" || {
+              echo "::error::$required did not run or did not pass; the live (1) case is then untested anywhere"
+              exit 1
+            }
+          done
+
+      - name: Prometheus scrapes the appliance on 9102
+        # 9102 rather than 9090, because 9090 is Prometheus's own port and the
+        # two would contend on a host network. If that ever drifts, the
+        # dashboards go blank with no error anywhere.
+        run: |
+          cd deployments
+          grep -q 'ingest:9102' prometheus.yml || {
+            echo "::error file=deployments/prometheus.yml::the scrape target is no longer ingest:9102"
+            exit 1
+          }
+          echo "scrape target intact"
