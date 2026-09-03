@@ -1,0 +1,51 @@
+# Prometheus configuration for a single venue appliance.
+#
+# This is the local half of the observability strategy: each appliance runs its
+# own Prometheus so an operator standing in the venue can answer "what happened
+# twenty minutes ago" without a working uplink. A fleet-wide Grafana scrapes or
+# receives from these later; see TODO.md, "Central Observability Strategy",
+# which is still an open network decision rather than a code one.
+
+global:
+  # Fifteen seconds is chosen against what the panels are for, not against what
+  # the exporter can bear. The dashboards read per-minute series, so a faster
+  # scrape buys resolution nothing displays, and a slower one loses the shape
+  # of a throughput dip.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    # Expanded from the environment by --enable-feature=expand-external-labels,
+    # which the compose file sets. Without that flag this stays the literal
+    # string "${VENUE_ID}", so the flag and this line travel together.
+    #
+    # Note that Prometheus expansion has no ":-default" form: an unset VENUE_ID
+    # yields an empty label, not a fallback. The compose file therefore gives it
+    # a default of its own.
+    venue: "${VENUE_ID}"
+    product: offload-ingest
+
+scrape_configs:
+  - job_name: offload-ingest
+    # The appliance exposes /metrics on its own listener, separate from the
+    # dashboard, because the two have different audiences and may be firewalled
+    # differently.
+    static_configs:
+      - targets: ["ingest:9102"]
+        labels:
+          service: ingest
+
+  # Prometheus scrapes itself so a gap in the data is distinguishable from a
+  # gap in the thing being measured.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+# There is deliberately NO scrape job for /health.
+#
+# It serves JSON, which the exposition parser cannot read, so a job pointed at
+# it would fail every scrape and sit at up=0 — an alarm that means nothing,
+# permanently on. The readiness signal a rule should alert on is already here in
+# the metric series (offload_ingest_messages_total going flat, and
+# offload_ingest_golf_throttled going to 1), and /health exists for the venue
+# monitoring system to call directly. Two mechanisms, each in the shape its
+# consumer expects.

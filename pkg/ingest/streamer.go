@@ -295,6 +295,11 @@ func (p *ProductionStreamer) sweepOne(ctx context.Context, v apisports.Vertical)
 	p.registry.Requests.Inc()
 	p.registry.RequestRate.Mark()
 	p.registry.Sport(string(v)).Requests.Inc()
+	// Recorded here rather than after toMessages, and deliberately: the
+	// provider answered. An out-of-season vertical returns an empty card
+	// forever, and booking that as a failed poll would make the readiness
+	// probe unable to tell a quiet sport from an unreachable one.
+	p.registry.RecordPoll(string(v))
 
 	// Real-time fidelity, measured from the same response — no extra request.
 	p.registry.IngestAge.Observe(sweep.Drift.IngestAge)
@@ -317,6 +322,9 @@ func (p *ProductionStreamer) sweepOne(ctx context.Context, v apisports.Vertical)
 	msgs := p.toMessages(v, sweep)
 	p.registry.Messages.Add(int64(len(msgs)))
 	p.registry.Sport(string(v)).Messages.Add(int64(len(msgs)))
+	if len(msgs) > 0 {
+		p.registry.RecordData(string(v))
+	}
 	return msgs, nil
 }
 

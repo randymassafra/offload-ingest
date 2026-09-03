@@ -106,6 +106,67 @@ Open items for the fleet rollout:
   ever contains a field the model does not. Worth revisiting if a second
   provider ever needs the same treatment.
 
+## Production Readiness
+
+Added in the deployment-hardening pass. What is done, and what is still open.
+
+- **Resilience is tested end to end.** `internal/pipeline` assembles the real
+  client, limiter, streamer, validator and publisher against a scripted hostile
+  provider (malformed JSON, 500, 429, then recovery) and asserts the pipeline
+  survives, logs, and republishes. The harness deliberately mirrors
+  `cmd/loadtest/production.go` exactly — an earlier version retried after an
+  error from `Next`, which made every test pass even with the streamer's
+  recovery deleted. A test double more forgiving than production tests nothing.
+- **`/health` is a readiness probe, not a liveness one.** 200 only when a sport
+  has produced data inside fifteen minutes AND no provider is under a 429 hard
+  floor. Served on both `:9102` and the dashboard. `/healthz` remains the
+  liveness check. See `pkg/metrics/health.go`.
+- **The overnight problem is reported, not solved.** "No data in fifteen
+  minutes" is indistinguishable from "nothing licensed is playing" without a
+  fixture calendar, which is upstream data the appliance does not hold. Health
+  therefore reports `last_poll` beside `last_data` so a monitoring system can
+  separate quiet from broken. **An alerting rule still has to be written that
+  suppresses on the first and pages on the second** — until it is, a venue that
+  alerts on `/health` alone will page every night.
+- **The Dockerfile pinned Go 1.24 against a `go 1.25.0` module.** The image
+  could not have built at all. Fixed; worth a CI job that builds the image,
+  because nothing in `go test` would ever have caught it.
+- **The container healthcheck runs the shipped binary.** `loadtest
+  -health-check=<url>`, because the distroless runtime has no shell and no
+  curl. The alternative was fattening the image or dropping the check.
+- **Compose gates production behind a separate overlay file.** `docker compose
+  up -d` starts the simulation stack and requires no credentials at all; the
+  live pipeline needs `-f docker-compose.yml -f docker-compose.production.yml`,
+  so nobody spends a free tier's daily budget by running the wrong command in
+  the wrong directory.
+
+  It was a profile first, and that did not work. Compose interpolates every
+  variable in a file before applying profiles, so the `${APISPORTS_KEY:?}`
+  guard on the profiled live service also broke the unprofiled default `up` —
+  the simulation stack could not start on a clean clone. Two files is the only
+  arrangement where both hold. CI asserts each half.
+- **The simulation stack needed `-no-license`.** Without it the generator exits
+  on "this build has no license public key" while Kafka comes up around it, so
+  the stack looks healthy and produces nothing. Found by writing the CI check
+  that the default stack actually starts rather than merely parses.
+
+Still open:
+
+- **No CI.** Everything above is verified locally. There is no pipeline running
+  `go test ./...`, `go vet`, or a Docker build on push, which is what would have
+  caught the Go version mismatch.
+- **`production.go` exits on any error from `Next`.** Currently unreachable —
+  `ProductionStreamer` swallows sweep failures and `MultiStreamer` isolates a
+  dead source — but it means any future error path that reaches the top of the
+  loop terminates the service rather than degrading it. Worth converting to a
+  bounded consecutive-failure tolerance before a fourth provider lands.
+- **Provider mode is exported; overall health is not.**
+  `offload_ingest_provider_mode{provider=}` reports 1/0 per provider. The
+  equivalent for readiness still does not exist.
+- **Health is not exported as a metric.** A rule must scrape `/health` or infer
+  starvation from `offload_ingest_messages_total` going flat. A
+  `offload_ingest_healthy` gauge would let one Prometheus rule cover both.
+
 ## Licensing
 
 - **Only the `free` tier is verified against a live key.** The `pro`, `ultra` and

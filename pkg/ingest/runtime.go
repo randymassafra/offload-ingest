@@ -9,6 +9,7 @@ import (
 
 	"github.com/offloadintelligence/offload-ingest/internal/generators"
 	"github.com/offloadintelligence/offload-ingest/internal/producer"
+	cricketprovider "github.com/offloadintelligence/offload-ingest/internal/provider/cricket"
 	golfprovider "github.com/offloadintelligence/offload-ingest/internal/provider/golf"
 	"github.com/offloadintelligence/offload-ingest/pkg/ingest/apisports"
 	"github.com/offloadintelligence/offload-ingest/pkg/licensing"
@@ -67,6 +68,14 @@ type RuntimeConfig struct {
 	GolfAPIKey string
 	// GolfCachePath overrides where the golf leaderboard is cached.
 	GolfCachePath string
+
+	// CricketAPIKey enables the cricket provider in production. Cricbuzz is
+	// RapidAPI-hosted, so this is normally the same RAPIDAPI_KEY that serves
+	// tennis; it is a separate field so a venue can be given a dedicated,
+	// separately-metered subscription without touching the others.
+	CricketAPIKey string
+	// CricketCachePath overrides where the cricket scorecard is cached.
+	CricketCachePath string
 
 	// FlinkAddr optionally enables the downstream state-buffer scraper. Empty
 	// leaves it off, which is the recommended architecture — see flink.go.
@@ -142,6 +151,13 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 			return nil, err
 		}
 		r.streamer = sim
+		// Every provider is simulated here, including ones whose credentials
+		// happen to be present. Reporting a provider live because a key is set
+		// would tell an operator quota is being spent when none is.
+		r.registry.SetProviderMode(ProviderAPISports, false, "process is in simulation mode")
+		r.registry.SetProviderMode(ProviderLiveGolf, false, "process is in simulation mode")
+		r.registry.SetProviderMode(ProviderCricbuzz, false, "process is in simulation mode")
+		r.registry.SetProviderMode(ProviderAllScores, false, "process is in simulation mode")
 		return r, nil
 	}
 
@@ -193,6 +209,47 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	// record can reach a topic by a route that skips the licence check.
 	var sources []DataStreamer
 	sources = append(sources, prod)
+	r.registry.SetProviderMode(ProviderAPISports, true, "")
+
+	// Tennis still has no production streamer at all. Its credential is used by
+	// the schema tooling, so a check based on configuration would call it live;
+	// it is not.
+	//
+	// Not "simulated" — ABSENT. There is no simulation fallback in production
+	// mode (NewSimulationStreamer is only reached on the branch above), and
+	// internal/allscores has no live client to fall back from. In production
+	// tennis emits nothing at all, and calling that "simulated" would tell an
+	// operator data was being generated when no data exists.
+	r.registry.SetProviderMode(ProviderAllScores, false, "no live client; tennis emits nothing in production mode")
+
+	// Cricket rides alongside on the same terms as golf: a different vendor on
+	// a different cadence, merged at the DataStreamer seam so scope
+	// enforcement, metrics and the producer treat it identically.
+	if claims.AllowsSport(string(generators.SportCricket)) && strings.TrimSpace(cfg.CricketAPIKey) != "" {
+		cc := cricketprovider.New(cfg.CricketAPIKey)
+		if cfg.CricketCachePath != "" {
+			cc = cc.Configure(cricketprovider.WithCachePath(cfg.CricketCachePath))
+		}
+		cs, err := NewCricketStreamer(CricketConfig{
+			Client: cc, Registry: r.registry, Logger: cfg.Logger, Now: cfg.Now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, cs)
+		r.registry.SetProviderMode(ProviderCricbuzz, true, "")
+		cfg.Logger.Info("cricket ingestion enabled",
+			"host", cricketprovider.Host,
+			"poll_every", CricketPollInterval.String())
+	} else {
+		// Two distinct reasons, kept distinct, exactly as for golf: "not
+		// licensed" is a commercial fact and "no key" is a deployment mistake.
+		reason := "RAPIDAPI_KEY is not set"
+		if !claims.AllowsSport(string(generators.SportCricket)) {
+			reason = "the licence does not entitle cricket"
+		}
+		r.registry.SetProviderMode(ProviderCricbuzz, false, reason)
+	}
 	if claims.AllowsSport(string(generators.SportGolf)) && strings.TrimSpace(cfg.GolfAPIKey) != "" {
 		gc := golfprovider.New(cfg.GolfAPIKey)
 		if cfg.GolfCachePath != "" {
@@ -205,8 +262,18 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 			return nil, err
 		}
 		sources = append(sources, gs)
+		r.registry.SetProviderMode(ProviderLiveGolf, true, "")
 		cfg.Logger.Info("golf ingestion enabled",
 			"host", golfprovider.Host, "poll_every", GolfPollInterval.String())
+	} else {
+		// Two distinct reasons, kept distinct. "Not licensed" is a commercial
+		// fact and "no key" is a deployment mistake, and an operator seeing a
+		// zero needs to know which one they are looking at.
+		reason := "GOLF_API_KEY is not set"
+		if !claims.AllowsSport(string(generators.SportGolf)) {
+			reason = "the licence does not entitle golf"
+		}
+		r.registry.SetProviderMode(ProviderLiveGolf, false, reason)
 	}
 	if len(sources) == 1 {
 		r.streamer = prod
@@ -489,3 +556,16 @@ func (r *Runtime) RecordDrift(v apisports.Vertical, d Drift) {
 		r.registry.LiveMatchLag.Observe(d.LiveMatchLag)
 	}
 }
+
+// Provider names as they appear on the offload_ingest_provider_mode gauge.
+//
+// Constants rather than string literals at each call site because the label
+// value is a public interface: a Grafana panel and an alert rule both match on
+// it, and a typo in one of five call sites would silently create a second
+// series rather than fail anywhere.
+const (
+	ProviderAPISports = "apisports"
+	ProviderLiveGolf  = "livegolf"
+	ProviderCricbuzz  = "cricbuzz"
+	ProviderAllScores = "allscores"
+)

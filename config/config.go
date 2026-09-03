@@ -94,6 +94,8 @@ type Config struct {
 
 	// GolfCachePath is where the golf provider caches its leaderboard.
 	GolfCachePath string
+	// CricketCachePath is where the cricket provider caches its scorecard.
+	CricketCachePath string
 
 	// --- observability ---
 
@@ -190,6 +192,7 @@ func Load(path string) (*Config, error) {
 		RapidAPICricketHost:   firstSet("RAPIDAPI_CRICKET_HOST"),
 		RapidAPIAllScoresHost: firstSet("RAPIDAPI_ALLSCORES_HOST"),
 		GolfCachePath:         firstSet("GOLF_CACHE_PATH"),
+		CricketCachePath:      firstSet("CRICKET_CACHE_PATH"),
 
 		DashboardAddr: firstSet("OFFLOAD_DASHBOARD_ADDR"),
 		MetricsAddr:   firstSet("OFFLOAD_METRICS_ADDR"),

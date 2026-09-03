@@ -18,8 +18,9 @@ key      the provider's fixture id — one partition per game, ordered
 headers  sport, feed, endpoint, model, sequence, fixture
 ```
 
-**14 sports, 38 endpoints, 4 providers.** API-Sports carries ten of the sports;
-the other four have no host there and keep the providers that do serve them.
+**13 sports, 29 endpoints, 4 provider adapters, 2 vendor accounts.** API-Sports
+carries ten of the sports; cricket, tennis and golf have no host there and are
+served over RapidAPI.
 
 ## Layout
 
@@ -659,6 +660,193 @@ from, and there is no sensible default for "how hard may this venue hit a paid
 API".
 
 `loadtest -h` lists every flag.
+
+## Deploying with Docker Compose
+
+The appliance ships as one image. `deployments/` carries the Dockerfile, the
+Compose stack and the Prometheus configuration.
+
+### Quick start
+
+**Simulation** — the default. Runs on a fresh clone with an empty environment:
+no API key, no licence, no `.env`.
+
+```bash
+cd deployments
+docker compose up -d                    # kafka + kafka-ui + loadtest generator
+```
+
+**Production** — the licensed pipeline against live providers. It is a separate
+overlay file, applied on top:
+
+```bash
+cp ../.env.example .env                 # then fill in the keys below
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+```
+
+That adds two containers to the three above: `offload-ingest` itself, and a
+local Prometheus on `:9090` scraping the appliance on `:9102`.
+
+### Why two files rather than one file with profiles
+
+Starting live ingest spends metered quota against a real API key, so it must be
+impossible to start by accident — and simulation must need nothing, or the
+"safe default" is only a claim in a README.
+
+A `production` profile inside one file cannot deliver both. **Compose
+interpolates every variable in a file before it applies profiles**, so the
+`${APISPORTS_KEY:?...}` guard on the live service fires on a plain
+`docker compose up -d` too, even though that command was never going to start
+the guarded service. The simulation stack then could not launch on a clean
+clone, which is the opposite of what was intended. Splitting the files is what
+makes both properties hold at once, and CI asserts each of them.
+
+Stop everything, keeping the Kafka and Prometheus volumes:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml down
+```
+
+### Required environment variables
+
+Read from the host environment or a `.env` beside the Compose file. Nothing is
+baked into the image — the image is identical on every appliance, and the
+licence is what differs.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `APISPORTS_KEY` | **yes** | The primary provider. Compose refuses to start without it. |
+| `OFFLOAD_LICENSE_FILE` | **yes** | Host path to the signed licence, mounted read-only at `/etc/offload/license.key`. Defaults to `./license.key`. |
+| `OFFLOAD_LICENSE_PUBKEY` | dev only | Verification key. A release build embeds it; set this only for development builds. |
+| `RAPIDAPI_KEY` | for cricket/tennis | One key covers Cricbuzz and AllScores. |
+| `GOLF_API_KEY` | for golf | live-golf-data is RapidAPI-hosted; falls back to `RAPIDAPI_KEY` when unset. |
+| `VENUE_ID` | recommended | Stamped onto every Prometheus series as the `venue` label. Unset means an unlabelled venue that a fleet-wide Grafana cannot separate from any other. |
+| `OFFLOAD_MODE` | no | `production` is set by the Compose service. Defaults to `simulation` everywhere else, so a mistyped value gets a load test rather than an unplanned run against a metered API. |
+| `VERSION`, `COMMIT`, `BUILD_DATE` | no | Stamped into the binary at build time. |
+
+`.env` is gitignored and `.env.example` documents every variable including the
+optional ones.
+
+### How to verify
+
+**1. Is the appliance producing data?**
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://localhost:9102/health
+```
+
+`200` means at least one sport has published inside the fifteen-minute window
+*and* no provider is serving a rate-limit hard floor. `503` means one of those
+is false, and the body says which:
+
+```bash
+curl -sS http://localhost:9102/health | jq
+```
+
+```json
+{
+  "ok": false,
+  "status": "data_starved",
+  "detail": "no data for 1820s, window is 900s (last: soccer)",
+  "last_poll": "2026-09-02T21:38:11Z",
+  "poll_age_seconds": 44.2,
+  "rate_limited": false
+}
+```
+
+`status` is a closed set — `ok`, `starting`, `data_starved`, `rate_limited` —
+so an alerting rule can match on it without breaking when the prose improves.
+
+Read `last_poll` alongside `last_data`. A box whose polls are current but whose
+data is stale is **quiet** — nothing licensed is playing, which at 04:00 is the
+overwhelmingly likely case. A box whose polls are *also* stale is **broken**.
+Suppress on the first, page on the second; the appliance cannot tell them apart
+on its own, because the fixture calendar that would settle it is upstream data
+it does not hold.
+
+The same probe is served on the dashboard at `http://localhost:8090/health`.
+`/healthz` is the separate *liveness* check — it answers only "is the process up
+and licensed", which is what an orchestrator should restart on. Restarting a
+data-starved appliance does not make a provider start answering.
+
+**2. Are the metrics being scraped?**
+
+```bash
+curl -sS http://localhost:9102/metrics | grep '^offload_ingest_messages_total'
+```
+
+Then confirm Prometheus agrees, rather than trusting that a config file means a
+working scrape:
+
+```bash
+curl -sS 'http://localhost:9090/api/v1/query?query=up{job="offload-ingest"}' | jq '.data.result'
+```
+
+`value` of `1` is a healthy scrape. `0` means Prometheus can reach the port but
+not parse it; no result at all means the target was never configured.
+
+Useful series once data is flowing:
+
+| Series | Reads |
+| --- | --- |
+| `offload_ingest_provider_mode{provider=}` | `1` live against the vendor, `0` simulated. `sum()` is how many feeds are spending quota. |
+| `offload_ingest_messages_total` | Published downstream. Flat is the starvation signal. |
+| `offload_ingest_sport_messages_total{sport=}` | Which feed went quiet. |
+| `offload_ingest_dropped_records_total{sport,reason}` | Scope enforcement. A rising `out_of_scope` means a licence mismatch. |
+| `offload_ingest_golf_throttled` | `1` while the 429 hard floor holds. |
+| `offload_ingest_golf_cadence_minutes` | Golf's current polling interval. |
+
+**3. Which providers are actually live?**
+
+```bash
+curl -sS http://localhost:9102/metrics | grep provider_mode
+```
+
+```
+offload_ingest_provider_mode{provider="allscores"} 0
+offload_ingest_provider_mode{provider="apisports"} 1
+offload_ingest_provider_mode{provider="cricbuzz"} 0
+offload_ingest_provider_mode{provider="livegolf"} 1
+```
+
+`1` means that provider is contacting its vendor and spending real quota. `0`
+means it is not — but check *which kind* of zero: in simulation mode a `0`
+provider still generates data locally, whereas `cricbuzz` and `allscores` have
+no live client at all and therefore emit **nothing** in production mode.
+
+The gauge reports **what the runtime assembled, not what the environment was
+configured with**, because those come apart routinely:
+
+- In simulation mode every provider is `0` even with every key present. Nothing
+  is being spent, and reporting otherwise would say quota is going out when it
+  is not.
+- `cricbuzz` and `allscores` are `0` in *every* mode, key or no key. Neither
+  package contains an HTTP client at all — only wire models — so there is
+  nothing to go live with. `RAPIDAPI_KEY` is set because the schema tooling
+  uses it, so a configuration-derived check would wrongly call them live. In
+  production these two sports emit no records whatsoever.
+- `livegolf` is `0` when the licence does not entitle golf, which is a
+  commercial fact rather than a deployment mistake.
+
+A missing `APISPORTS_KEY` does **not** silently degrade to `0`. Production mode
+refuses to start at all without it (`production mode needs an API-Sports key`),
+so a venue cannot quietly end up serving simulated data believing it is live.
+
+**3. Is the container healthcheck wired?**
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' offload-ingest
+```
+
+The runtime image is distroless — no shell, no curl — so the healthcheck runs
+the shipped binary's own probe (`loadtest -health-check=<url>`) rather than
+fattening the image or dropping the check. `docker inspect` also keeps the
+failure log, which is often the only forensic record of an appliance that spent
+the night restarting.
+
+Note the container is unhealthy while data-starved, by design. If you would
+rather a starved appliance not be restarted by an orchestrator, keep the
+readiness probe on `/health` and point the *liveness* probe at `/healthz`.
 
 ## Polling a raw endpoint
 

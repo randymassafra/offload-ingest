@@ -186,6 +186,19 @@ type Registry struct {
 	perSport map[string]*SportMetrics
 	started  time.Time
 	now      func() time.Time
+
+	// floors records which providers are serving a rate-limit hard floor,
+	// under its own mutex so a health probe never contends with the ingest
+	// path. Keyed by provider, not sport: a floor is charged to a
+	// subscription. See Registry.MarkRateLimited.
+	floorMu sync.RWMutex
+	floors  map[string]bool
+
+	// providerModes records which providers are live and which are simulated.
+	// Under its own mutex for the same reason as floors: a Prometheus scrape
+	// must never queue behind the ingest path.
+	modeMu        sync.RWMutex
+	providerModes map[string]ProviderMode
 }
 
 // HostMetrics is the Minisforum edge box's resource usage.
@@ -276,6 +289,13 @@ type SportMetrics struct {
 	Latency *Histogram
 	// IngestAge is this sport's staleness distribution, in seconds.
 	IngestAge *TimeSeries
+
+	// LastPoll is when the provider last answered for this sport, including
+	// with an empty card, and LastData when it last yielded records. Health
+	// needs both: the gap between them is what separates a quiet feed from a
+	// dead one. See pkg/metrics/health.go.
+	LastPoll *Timestamp
+	LastData *Timestamp
 }
 
 // NewRegistry builds a registry.
@@ -339,6 +359,8 @@ func (r *Registry) Sport(name string) *SportMetrics {
 		MessageRate:    NewTimeSeries(r.now),
 		Latency:        NewHistogram(LatencyBuckets),
 		IngestAge:      NewTimeSeries(r.now),
+		LastPoll:       &Timestamp{},
+		LastData:       &Timestamp{},
 	}
 	r.perSport[name] = m
 	return m

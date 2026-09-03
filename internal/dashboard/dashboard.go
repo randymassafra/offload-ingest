@@ -70,7 +70,14 @@ func New(cfg Config) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/state", s.handleState)
+	// /healthz stays as the liveness probe: it answers "is this process up and
+	// licensed". /health is the readiness probe and answers the harder
+	// question, "is this appliance producing data" — see pkg/metrics/health.go.
+	// Two routes because a container orchestrator wants opposite behaviour
+	// from each: restart on a failed liveness check, stop routing but leave
+	// the box alone on a failed readiness check.
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/health", s.handleReadiness)
 	s.srv = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           mux,
@@ -506,6 +513,24 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	fmt.Fprintln(w, "ok")
+}
+
+// handleReadiness serves the data-flow readiness probe.
+//
+// It defers to the metrics registry, which owns the freshness state, so the
+// dashboard and the :9102 listener cannot disagree about whether the box is
+// healthy — two probes returning different answers is worse than one probe.
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	if s.provider == nil {
+		http.Error(w, "no pipeline attached", http.StatusServiceUnavailable)
+		return
+	}
+	reg := s.provider.Registry()
+	if reg == nil {
+		http.Error(w, "no metrics registry", http.StatusServiceUnavailable)
+		return
+	}
+	reg.HealthHandler(metrics.DefaultHealthWindow).ServeHTTP(w, r)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

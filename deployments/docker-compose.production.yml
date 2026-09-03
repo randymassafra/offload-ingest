@@ -1,0 +1,127 @@
+# Production overlay: the licensed pipeline and its local Prometheus.
+#
+# Applied ON TOP of docker-compose.yml, which supplies Kafka:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+#
+# A separate file rather than a profile in the base stack, and the reason is
+# not stylistic. Compose interpolates every variable in a file before it
+# applies profiles, so the `${APISPORTS_KEY:?}` guard below would fire on a
+# plain `docker compose up -d` even though the service it guards was not being
+# started. That made the simulation stack impossible to launch on a fresh clone
+# with an empty environment — the opposite of a safe default. Splitting the
+# files is what lets both hold at once: a default that requires nothing, and a
+# production stack that refuses to start without a key.
+
+name: offload-ingest
+
+x-platform: &platform linux/amd64
+
+services:
+  # ---------------------------------------------------------------------------
+  # Production ingest, the service this repository actually ships.
+  # ---------------------------------------------------------------------------
+  #
+  # Distinct from `loadtest` above, which drives the simulators at a broker to
+  # measure throughput. This one runs the licensed pipeline against live
+  # providers, and is the profile a venue appliance boots.
+  #
+  # It lives in a separate file so `docker compose up -d` cannot start it by
+  # accident: it spends metered quota against a real API key, and a stack that
+  # burns a free tier's daily budget the first time someone runs it in the
+  # wrong directory is a bad default. Start it explicitly:
+  #
+  #     docker compose -f docker-compose.yml \
+  #                    -f docker-compose.production.yml up -d
+  ingest:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+      platforms:
+        - linux/amd64
+      args:
+        TARGETOS: linux
+        TARGETARCH: amd64
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    image: offload-ingest/ingest:${VERSION:-dev}
+    platform: *platform
+    container_name: offload-ingest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8090"   # operator dashboard, and /health
+      - "9102:9102"   # Prometheus exposition, and /health
+    environment:
+      # Credentials are passed through from the host environment or a .env
+      # beside this file. They are never baked into the image: the image is the
+      # same on every appliance, and the licence is what differs.
+      APISPORTS_KEY: ${APISPORTS_KEY:?set APISPORTS_KEY in deployments/.env}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      GOLF_API_KEY: ${GOLF_API_KEY:-}
+      OFFLOAD_MODE: production
+      OFFLOAD_LICENSE_PATH: /etc/offload/license.key
+      OFFLOAD_LICENSE_PUBKEY: ${OFFLOAD_LICENSE_PUBKEY:-}
+      KAFKA_BROKERS: kafka:9094
+    volumes:
+      # Read-only: the process verifies the licence, it never rewrites it.
+      - ${OFFLOAD_LICENSE_FILE:-./license.key}:/etc/offload/license.key:ro
+    command:
+      - "-mode=production"
+      - "-brokers=kafka:9094"
+      - "-topic=ingest"
+      - "-topic-per-sport"
+      - "-topic-per-feed"
+      - "-dashboard-addr=:8090"
+      - "-metrics-addr=:9102"
+      - "-log-level=info"
+    healthcheck:
+      # The readiness probe, not a liveness one. A data-starved appliance is
+      # unhealthy here even though the process is fine, which is the whole
+      # point — see pkg/metrics/health.go.
+      #
+      # The distroless runtime image carries no shell and no curl, so this runs
+      # the binary's own probe rather than shelling out.
+      test: ["CMD", "/usr/local/bin/loadtest", "-health-check=http://127.0.0.1:9102/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous, because a cold appliance has to verify a licence, resolve a
+      # tournament and complete a first sweep before it has anything to report.
+      start_period: 120s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Local Prometheus.
+  # ---------------------------------------------------------------------------
+  #
+  # Scrapes the appliance on 9102. Runs on its own default port 9090 inside the
+  # network, which is exactly why the exposition endpoint is NOT on 9090: on a
+  # host network the two would contend for the bind.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    platform: *platform
+    container_name: offload-prometheus
+    depends_on:
+      - ingest
+    ports:
+      - "9090:9090"
+    environment:
+      VENUE_ID: ${VENUE_ID:-unset}
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # Without this the external_labels block keeps the literal "${VENUE_ID}".
+      - "--enable-feature=expand-external-labels"
+      # An appliance has a small disk and no archival duty; the fleet store is
+      # the long-term home. Fifteen days covers "what happened last weekend".
+      - "--storage.tsdb.retention.time=15d"
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:

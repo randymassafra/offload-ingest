@@ -405,6 +405,19 @@ func TestElapsedIsNullWhenNotPlaying(t *testing.T) {
 // Whatever the provider, the invariant is the same: soccer must never collapse
 // back to a single-competition feed.
 func TestSoccerSpansMultipleLeagues(t *testing.T) {
+	// The soccer simulator evolves a real captured sweep rather than inventing
+	// documents, so the breadth this test measures is the breadth of the
+	// capture. Without fixtures/ on disk it visits exactly one competition and
+	// fails — which is a missing input, not a regression.
+	//
+	// Guarded because /fixtures/ is gitignored: on a fresh clone, and therefore
+	// on every CI run, this test had nothing to work with. It was the one
+	// capture-dependent test that failed instead of skipping, and it would have
+	// made the first CI run red for a reason unrelated to the commit.
+	if len(capturedSports(t)) == 0 {
+		t.Skip("no captures on disk; run `make capture` to enable this check")
+	}
+
 	f, err := New(SportSoccer, FeedBoxScore, 3)
 	if err != nil {
 		t.Fatalf("New: %v", err)

@@ -1,7 +1,21 @@
-# Local ingest load-test stack. Every service is pinned to linux/amd64 so the
-# images match the deployment target; on an arm64 workstation Docker runs them
-# under emulation, while the loadtest binary itself is cross-compiled natively
-# by the builder stage in deployments/Dockerfile.
+# Simulation stack: Kafka, a Kafka UI and the load generator.
+#
+# This file is deliberately free of credentials. It references no API key, no
+# licence and no RapidAPI host, so `docker compose up -d` works on a fresh
+# clone with an empty environment. That is what makes simulation the safe
+# default rather than merely the documented one.
+#
+# The live pipeline lives in docker-compose.production.yml as an overlay, and
+# NOT as a profile in this file. Compose interpolates variables across the
+# whole file before profiles are applied, so a `${APISPORTS_KEY:?}` guard on a
+# profiled service still fails the default `up`. Splitting the files is the
+# only way to have both properties: a default that needs nothing, and a
+# production stack that refuses to start without a key.
+#
+# Every service is pinned to linux/amd64 so the images match the deployment
+# target; on an arm64 workstation Docker runs them under emulation, while the
+# binary itself is cross-compiled natively by the builder stage in
+# deployments/Dockerfile.
 name: offload-ingest
 
 x-platform: &platform linux/amd64
@@ -100,6 +114,14 @@ services:
       - "-burst-interval=3s"
       - "-webhook-addr=:8088"
       - "-stats-every=10s"
+      # The simulation stack must start with no credentials and no licence
+      # file, which is what makes it a safe default. Without this the container
+      # exits on "this build has no license public key" while Kafka comes up
+      # around it, so the stack looks healthy and produces nothing.
+      #
+      # -no-license refuses production mode outright, so it cannot be the route
+      # by which someone accidentally runs live ingest unlicensed.
+      - "-no-license"
     # A load generator should never take the stack down with it on exit.
     restart: "no"
 

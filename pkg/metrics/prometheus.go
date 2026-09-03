@@ -159,6 +159,35 @@ func (r *Registry) WritePrometheus(w io.Writer, product string) error {
 		r.Host.ProcessRSS.Value(), nil)
 	e.gauge("process_goroutines", "Goroutines currently running.", r.Host.Goroutines.Value(), nil)
 
+	// --- provider mode ------------------------------------------------------
+	//
+	// 1 = this provider is contacting its vendor and spending real quota.
+	// 0 = it is not. Read the accompanying reason for which kind of zero it
+	// is: a simulated provider generates data locally, but a provider with no
+	// live client emits nothing at all in production. Both are 0; only one of
+	// them still fills a topic.
+	//
+	// Always exported, unlike the golf and flink blocks below. Those are absent
+	// when unconfigured because a gauge pinned at zero graphs as a healthy flat
+	// line; here zero is the meaningful, actionable value — it is the whole
+	// point of the series — so suppressing it would hide exactly the state an
+	// operator needs to see.
+	//
+	// See pkg/metrics/mode.go: this reports what the runtime actually
+	// assembled, not what the environment was configured with.
+	if names := r.ProviderNames(); len(names) > 0 {
+		modes := r.ProviderModes()
+		e.help("provider_mode", "gauge",
+			"1 when the provider is live against its vendor, 0 when it is not.")
+		for _, n := range names {
+			v := float64(ProviderSimulation)
+			if modes[n].Live {
+				v = ProviderLive
+			}
+			e.sample("provider_mode", labels{{"provider", n}}, v)
+		}
+	}
+
 	// --- golf ---------------------------------------------------------------
 	//
 	// Exported only once the feed has set a cadence, so a deployment that does
@@ -314,6 +343,11 @@ func (r *Registry) PrometheusHandler(product string) http.Handler {
 func (r *Registry) ServeMetrics(addr, product string) (string, *http.Server, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", r.PrometheusHandler(product))
+	// /health rides on the metrics listener as well as the dashboard's.
+	// The venue monitoring system already has to reach this port to scrape,
+	// and requiring it to open a second one to answer "is this box producing
+	// data" is a firewall rule nobody will remember to add.
+	mux.Handle("/health", r.HealthHandler(DefaultHealthWindow))
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		http.Redirect(w, req, "/metrics", http.StatusFound)
 	})

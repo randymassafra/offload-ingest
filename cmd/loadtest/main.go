@@ -93,6 +93,9 @@ type options struct {
 	logLevel      string
 	showVersion   bool
 	listEndpoints bool
+	// healthCheck probes a URL and exits, instead of running the pipeline.
+	// See cmd/loadtest/healthcheck.go for why the binary carries its own.
+	healthCheck string
 }
 
 func main() {
@@ -108,6 +111,13 @@ func run() error {
 	// credential. Real environment variables always win over the file.
 	cfg, envErr := config.Load(preflightEnvFile())
 	opts := parseFlags(cfg)
+	// Answered before anything else reads a credential, binds a port or
+	// verifies a licence. A healthcheck runs every thirty seconds for the life
+	// of the container; it must be the cheapest possible path through this
+	// binary, and it must not be able to disturb the process it is checking.
+	if opts.healthCheck != "" {
+		return runHealthCheck(opts.healthCheck)
+	}
 	if opts.showVersion {
 		fmt.Printf("loadtest %s (commit %s, built %s)\n", version, commit, date)
 		return nil
@@ -229,6 +239,8 @@ func run() error {
 			Batch:            opts.eventsPerPoll,
 			GolfAPIKey:       cfg.GolfAPIKey,
 			GolfCachePath:    cfg.GolfCachePath,
+			CricketAPIKey:    cfg.RapidAPIKey,
+			CricketCachePath: cfg.CricketCachePath,
 			FlinkAddr:        firstNonEmpty(opts.flinkAddr, cfg.FlinkAddr),
 			FlinkTTL:         opts.flinkTTL,
 			Logger:           log,
@@ -429,6 +441,7 @@ func parseFlags(cfg *config.Config) *options {
 	flag.StringVar(&o.logLevel, "log-level", "info", "debug|info|warn|error")
 	flag.BoolVar(&o.showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&o.listEndpoints, "endpoints", false, "list every provider endpoint the generators cover, then exit")
+	flag.StringVar(&o.healthCheck, "health-check", "", "probe a /health URL and exit 0 if healthy, 1 otherwise; for container healthchecks on the distroless image")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),

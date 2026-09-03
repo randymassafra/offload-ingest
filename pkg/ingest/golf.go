@@ -188,6 +188,12 @@ func (g *GolfStreamer) Next(ctx context.Context) ([]generators.Message, error) {
 		OrgID: g.orgID, TournID: g.tournID, Year: g.year,
 	})
 	if err != nil {
+		// The throttle state has to be published here as well as in
+		// applyCadence. A 429 with no cache to fall back on returns an error,
+		// which skips applyCadence entirely — so reporting the hard floor only
+		// from the success path meant the readiness probe stayed green during
+		// precisely the outage it exists to report.
+		g.syncThrottleState()
 		return nil, fmt.Errorf("ingest: golf leaderboard: %w", err)
 	}
 	g.registry.Requests.Inc()
@@ -234,6 +240,8 @@ func (g *GolfStreamer) Next(ctx context.Context) ([]generators.Message, error) {
 	}
 	g.registry.Messages.Inc()
 	g.registry.Sport("golf").Messages.Inc()
+	g.registry.RecordPoll("golf")
+	g.registry.RecordData("golf")
 	g.log.Debug("golf leaderboard",
 		"tournament", g.tournID, "tour", id.OrgID,
 		"players", len(lb.Rows), "status", lb.Status, "cached", meta.FromCache)
@@ -345,7 +353,7 @@ func (g *GolfStreamer) applyCadence(lb *golfprovider.Leaderboard) {
 	g.mu.Unlock()
 
 	g.registry.Golf.CadenceMinutes.Set(next.Interval.Minutes())
-	g.registry.Golf.Throttled.Set(next.Mode == "throttled")
+	g.syncThrottleState()
 
 	if previous.Mode != next.Mode {
 		level := "switched to"
@@ -365,3 +373,18 @@ func (g *GolfStreamer) Cadence() GolfCadence {
 	defer g.mu.Unlock()
 	return g.cadence
 }
+
+// syncThrottleState publishes the golf hard floor to the metrics registry.
+//
+// It reads the client rather than a cadence mode so that both the success and
+// the failure path report the same thing, and takes the provider name as the
+// key because a floor is charged to a subscription: RapidAPI throttling this
+// key would stop golf whether or not a leaderboard was in flight.
+func (g *GolfStreamer) syncThrottleState() {
+	throttled, _ := g.client.Throttled()
+	g.registry.Golf.Throttled.Set(throttled)
+	g.registry.MarkRateLimited(golfProviderName, throttled)
+}
+
+// golfProviderName is how the golf subscription appears in health output.
+const golfProviderName = "livegolf"
